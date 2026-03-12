@@ -51,6 +51,7 @@ function reducer(state, action) {
         totalScore: action.payload.totalScore || 0,
         status: action.payload.gameState?.status || state.status,
         registrationRejected: false,
+        myAnswer: action.payload.myAnswer || state.myAnswer,
       };
 
     case 'FULL_STATE': {

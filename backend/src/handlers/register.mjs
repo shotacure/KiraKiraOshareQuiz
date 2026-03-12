@@ -1,4 +1,4 @@
-import { putConnection, putPlayer, getPlayer, getPlayerByName, getGameState, getAllPlayers } from '../lib/db.mjs';
+import { putConnection, putPlayer, getPlayer, getPlayerByName, getGameState, getAllPlayers, getAnswer } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRoles } from '../lib/broadcast.mjs';
 import { randomUUID } from 'crypto';
 
@@ -80,8 +80,8 @@ export async function handleRegister(connectionId, body) {
     connectedAt: new Date().toISOString(),
   });
 
-  // Send registration confirmation with current game state
-  await sendToConnection(connectionId, {
+  // Build response including current answer state for reconnecting players
+  const response = {
     event: 'registered',
     playerId,
     name: player.name,
@@ -90,7 +90,22 @@ export async function handleRegister(connectionId, body) {
       status: gameState.status,
       currentQuizId: gameState.currentQuizId,
     },
-  });
+    myAnswer: null,
+  };
+
+  if (gameState.currentQuizId) {
+    const existingAnswer = await getAnswer(gameState.currentQuizId, playerId);
+    if (existingAnswer) {
+      response.myAnswer = {
+        answerText: existingAnswer.answerText,
+        answeredAt: existingAnswer.answeredAt,
+        isCorrect: existingAnswer.isCorrect,
+        pointsAwarded: existingAnswer.pointsAwarded,
+      };
+    }
+  }
+
+  await sendToConnection(connectionId, response);
 
   // Notify admin/display about new player
   const allPlayers = await getAllPlayers();

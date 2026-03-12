@@ -16,9 +16,6 @@ backend/samconfig.toml
 # ============================================================
 frontend/dist/
 
-# Frontend config (contains secret route paths)
-frontend/src/config.js
-
 # ============================================================
 # Environment & Secrets
 # ============================================================

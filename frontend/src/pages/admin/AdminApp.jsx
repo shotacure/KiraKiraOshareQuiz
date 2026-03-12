@@ -15,23 +15,23 @@ export default function AdminApp() {
 
   useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
 
+  // On connect (F5 recovery or WS reconnect): re-authenticate if we have a saved secret
   useEffect(() => {
-    if (connected && authedSecretRef.current && !state.authed) {
+    if (connected && authedSecretRef.current) {
       send({ action: 'connect_role', role: 'admin', secret: authedSecretRef.current });
-      dispatch({ type: 'SET_ROLE', payload: 'admin' });
+      if (!state.authed) dispatch({ type: 'SET_ROLE', payload: 'admin' });
     }
   }, [connected]);
 
+  // Persist secret on successful auth, reset on failure
   useEffect(() => {
-    if (state.authed) { setSubmitting(false); authedSecretRef.current = secret || authedSecretRef.current; if (authedSecretRef.current) sessionStorage.setItem(ADMIN_SECRET_KEY, authedSecretRef.current); }
+    if (state.authed) {
+      setSubmitting(false);
+      authedSecretRef.current = secret || authedSecretRef.current;
+      if (authedSecretRef.current) sessionStorage.setItem(ADMIN_SECRET_KEY, authedSecretRef.current);
+    }
     if (state.authError) setSubmitting(false);
   }, [state.authed, state.authError]);
-
-  useEffect(() => {
-    if (connected && authedSecretRef.current && state.authed) {
-      send({ action: 'connect_role', role: 'admin', secret: authedSecretRef.current });
-    }
-  }, [connected]);
 
   const handleLogin = () => {
     if (!secret.trim() || submitting) return;
@@ -202,38 +202,58 @@ function AnswerList({ state, send }) {
     send({ action: 'judge', quizId: currentQuiz.quizId, playerId, isCorrect });
   };
 
+  // Sort by answer time (earliest first) to ensure rank = answer speed
+  const sorted = [...answers].sort((a, b) => {
+    const tA = a.elapsedMs ?? Infinity;
+    const tB = b.elapsedMs ?? Infinity;
+    return tA - tB;
+  });
+
+  // Find the first unjudged answer — only this row's buttons are active
+  const firstUnjudgedIdx = sorted.findIndex(a => a.isCorrect == null);
+
   return (
     <Card>
       <SectionTitle className="!mb-3">{t('admin.answers.title', { count: answers.length })}</SectionTitle>
       <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">
-        {answers.length === 0 ? (
+        {sorted.length === 0 ? (
           <p className="text-quiz-muted text-sm text-center py-4">{t('admin.answers.empty')}</p>
-        ) : answers.map((a, i) => (
-          <div key={a.playerId} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
-            a.isCorrect === true ? 'bg-quiz-green/10 border border-quiz-green/20' :
-            a.isCorrect === false ? 'bg-quiz-accent/10 border border-quiz-accent/20' : 'bg-quiz-surface/50'
-          }`}>
-            <span className="text-quiz-muted font-mono w-6 text-center text-xs">{i + 1}</span>
-            <span className="font-bold text-quiz-text truncate w-20">{a.playerName}</span>
-            <span className="flex-1 font-body text-quiz-text truncate">{a.answerText}</span>
-            <span className="text-quiz-muted text-xs font-mono whitespace-nowrap">
-              {a.elapsedMs != null ? formatElapsedMs(a.elapsedMs) : ''}
-            </span>
-            {a.isCorrect === true && a.pointsAwarded != null && (
-              <span className="text-quiz-gold text-xs font-bold whitespace-nowrap">+{a.pointsAwarded}</span>
-            )}
-            <div className="flex gap-1 ml-1 shrink-0">
-              <button onClick={() => handleJudge(a.playerId, true)}
-                className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
-                  a.isCorrect === true ? 'bg-quiz-green text-white' : 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30'
-                }`}>○</button>
-              <button onClick={() => handleJudge(a.playerId, false)}
-                className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
-                  a.isCorrect === false ? 'bg-quiz-accent text-white' : 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30'
-                }`}>×</button>
+        ) : sorted.map((a, i) => {
+          const isActive = i === firstUnjudgedIdx;
+          return (
+            <div key={a.playerId} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
+              a.isCorrect === true ? 'bg-quiz-green/10 border border-quiz-green/20' :
+              a.isCorrect === false ? 'bg-quiz-accent/10 border border-quiz-accent/20' :
+              isActive ? 'bg-quiz-surface/80 border border-quiz-teal/30' : 'bg-quiz-surface/50'
+            }`}>
+              <span className="text-quiz-muted font-mono w-6 text-center text-xs">{i + 1}</span>
+              <span className="font-bold text-quiz-text truncate w-20">{a.playerName}</span>
+              <span className="flex-1 font-body text-quiz-text truncate">{a.answerText}</span>
+              <span className="text-quiz-muted text-xs font-mono whitespace-nowrap">
+                {a.elapsedMs != null ? formatElapsedMs(a.elapsedMs) : ''}
+              </span>
+              {a.isCorrect === true && a.pointsAwarded != null && (
+                <span className="text-quiz-gold text-xs font-bold whitespace-nowrap">+{a.pointsAwarded}</span>
+              )}
+              <div className="flex gap-1 ml-1 shrink-0">
+                <button onClick={() => handleJudge(a.playerId, true)}
+                  disabled={!isActive && a.isCorrect == null}
+                  className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
+                    a.isCorrect === true ? 'bg-quiz-green text-white' :
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
+                  }`}>○</button>
+                <button onClick={() => handleJudge(a.playerId, false)}
+                  disabled={!isActive && a.isCorrect == null}
+                  className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
+                    a.isCorrect === false ? 'bg-quiz-accent text-white' :
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
+                  }`}>×</button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Card>
   );

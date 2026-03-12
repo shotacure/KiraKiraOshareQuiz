@@ -50,12 +50,15 @@ export async function handleJudge(connectionId, body) {
   const basePoints = quiz.points || 10;
 
   if (isCorrect) {
-    // Determine rank among correct answers (sorted by answeredAt)
+    // First, mark as correct temporarily to include in ranking
+    await updateAnswerJudgment(quizId, playerId, true, 0);
+
+    // Calculate rank by answeredAt among ALL correct answers (including this one)
     const allAnswers = await getAnswersForQuiz(quizId);
-    const alreadyCorrect = allAnswers.filter(
-      (a) => a.isCorrect === true && a.playerId !== playerId
-    );
-    const rank = alreadyCorrect.length + 1;
+    const correctAnswers = allAnswers
+      .filter((a) => a.isCorrect === true)
+      .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
+    const rank = correctAnswers.findIndex((a) => a.playerId === playerId) + 1;
     const pointsAwarded = calcPoints(basePoints, rank);
 
     // Revert previous judgment if was already correct with different points

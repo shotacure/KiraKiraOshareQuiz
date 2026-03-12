@@ -15,25 +15,23 @@ export default function DisplayApp() {
 
   useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
 
-  // Auto-login on mount if secret in sessionStorage
+  // On connect (F5 recovery or WS reconnect): re-authenticate if we have a saved secret
   useEffect(() => {
-    if (connected && authedSecretRef.current && !state.authed) {
+    if (connected && authedSecretRef.current) {
       send({ action: 'connect_role', role: 'display', secret: authedSecretRef.current });
-      dispatch({ type: 'SET_ROLE', payload: 'display' });
+      if (!state.authed) dispatch({ type: 'SET_ROLE', payload: 'display' });
     }
   }, [connected]);
 
+  // Persist secret on successful auth, reset on failure
   useEffect(() => {
-    if (state.authed) { setSubmitting(false); authedSecretRef.current = secret || authedSecretRef.current; if (authedSecretRef.current) sessionStorage.setItem(DISPLAY_SECRET_KEY, authedSecretRef.current); }
+    if (state.authed) {
+      setSubmitting(false);
+      authedSecretRef.current = secret || authedSecretRef.current;
+      if (authedSecretRef.current) sessionStorage.setItem(DISPLAY_SECRET_KEY, authedSecretRef.current);
+    }
     if (state.authError) setSubmitting(false);
   }, [state.authed, state.authError]);
-
-  // Re-auth on reconnect
-  useEffect(() => {
-    if (connected && authedSecretRef.current && state.authed) {
-      send({ action: 'connect_role', role: 'display', secret: authedSecretRef.current });
-    }
-  }, [connected]);
 
   const handleLogin = () => {
     if (!secret.trim() || submitting) return;

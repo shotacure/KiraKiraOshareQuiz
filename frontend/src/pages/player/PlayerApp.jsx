@@ -4,78 +4,153 @@ import { useWebSocket } from '../../hooks/useWebSocket';
 import { PLAYER_ID_KEY, PLAYER_NAME_KEY } from '../../config';
 import { t } from '../../i18n';
 
+/**
+ * Recovery flow on F5 / reconnect:
+ *
+ *   phase='loading'    → WS connected, send get_state, wait for server response
+ *   phase='recovering' → server responded with accepting+, localStorage has saved ID,
+ *                         send register, wait for registered event
+ *   phase='ready'      → show appropriate screen based on state
+ *
+ * Key: we track `serverResponded` to distinguish "initial default status=init"
+ * from "server actually told us status=init". Only after server responds
+ * do we evaluate the status.
+ */
 export default function PlayerApp() {
   const { state, dispatch } = useGame();
   const handleMessage = useMessageHandler();
   const { send, connected } = useWebSocket(handleMessage);
-  const [recovering, setRecovering] = useState(() => !!localStorage.getItem(PLAYER_ID_KEY));
-  const recoveryAttempted = useRef(false);
+
+  const hasSavedSession = useRef(!!localStorage.getItem(PLAYER_ID_KEY));
+  const [phase, setPhase] = useState(hasSavedSession.current ? 'loading' : 'ready');
+  const recoveryDone = useRef(false);
+  const serverResponded = useRef(false);
 
   useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
 
-  // Auto-recover on connect
+  // Phase 1: get_state on connect
   useEffect(() => {
     if (!connected) return;
-    const savedId = localStorage.getItem(PLAYER_ID_KEY);
-    const savedName = localStorage.getItem(PLAYER_NAME_KEY);
+    serverResponded.current = false;
+    send({ action: 'get_state' });
+  }, [connected]);
 
-    if (savedId && savedName && !recoveryAttempted.current) {
-      recoveryAttempted.current = true;
-      send({ action: 'register', name: savedName, playerId: savedId });
-      setTimeout(() => send({ action: 'get_state' }), 300);
-    } else if (state.playerId && state.playerName) {
+  // Detect server response: any state_sync, registered, or full_reset sets the real status
+  // We watch for status changes that differ from the initial default
+  const statusChangeCount = useRef(0);
+  useEffect(() => {
+    statusChangeCount.current += 1;
+    // First render has status='init' from initialState — ignore it
+    if (statusChangeCount.current <= 1) return;
+    serverResponded.current = true;
+  }, [state.status]);
+
+  // Also mark responded on registrationRejected (server explicitly replied)
+  useEffect(() => {
+    if (state.registrationRejected) serverResponded.current = true;
+  }, [state.registrationRejected]);
+
+  // Also mark responded on playerId change (registered event arrived)
+  useEffect(() => {
+    if (state.playerId) serverResponded.current = true;
+  }, [state.playerId]);
+
+  // Phase 2: once server responded, decide whether to recover
+  useEffect(() => {
+    if (phase !== 'loading') return;
+    if (!serverResponded.current) return; // Still waiting for server
+
+    if (state.status === 'init') {
+      // Game truly in init — no recovery, show preparing screen
+      setPhase('ready');
+      return;
+    }
+
+    // Status is accepting or later — try to recover
+    if (connected && !recoveryDone.current) {
+      const savedId = localStorage.getItem(PLAYER_ID_KEY);
+      const savedName = localStorage.getItem(PLAYER_NAME_KEY);
+      if (savedId && savedName) {
+        recoveryDone.current = true;
+        setPhase('recovering');
+        send({ action: 'register', name: savedName, playerId: savedId });
+      } else {
+        setPhase('ready');
+      }
+    }
+  }, [state.status, connected, phase]);
+
+  // Phase 3: registration succeeded
+  useEffect(() => {
+    if (state.playerId) {
+      localStorage.setItem(PLAYER_ID_KEY, state.playerId);
+      if (state.playerName) localStorage.setItem(PLAYER_NAME_KEY, state.playerName);
+      if (phase !== 'ready') setPhase('ready');
+    }
+  }, [state.playerId]);
+
+  // Registration rejected
+  useEffect(() => {
+    if (state.registrationRejected) {
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.removeItem(PLAYER_NAME_KEY);
+      recoveryDone.current = false;
+      setPhase('ready');
+    }
+  }, [state.registrationRejected]);
+
+  // Timeout: if loading/recovering takes too long, give up
+  useEffect(() => {
+    if (phase === 'loading' || phase === 'recovering') {
+      const timer = setTimeout(() => setPhase('ready'), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [phase]);
+
+  // Full reset broadcast — clear everything
+  const prevStatus = useRef(state.status);
+  useEffect(() => {
+    if (state.status === 'init' && !state.playerId && prevStatus.current !== 'init' && serverResponded.current) {
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.removeItem(PLAYER_NAME_KEY);
+      recoveryDone.current = false;
+      setPhase('ready');
+    }
+    prevStatus.current = state.status;
+  }, [state.status, state.playerId]);
+
+  // WS reconnect (connection drop, not F5): re-register if already ready
+  useEffect(() => {
+    if (connected && state.playerId && state.playerName && phase === 'ready') {
       send({ action: 'register', name: state.playerName, playerId: state.playerId });
       setTimeout(() => send({ action: 'get_state' }), 300);
     }
   }, [connected]);
 
-  // Once registered, stop showing recovery spinner
-  useEffect(() => {
-    if (state.playerId) {
-      setRecovering(false);
-      localStorage.setItem(PLAYER_ID_KEY, state.playerId);
-      if (state.playerName) localStorage.setItem(PLAYER_NAME_KEY, state.playerName);
-    }
-  }, [state.playerId]);
+  // ── Render ──
 
-  // If recovery fails (server doesn't know us), show login
-  useEffect(() => {
-    if (recovering && connected) {
-      const timeout = setTimeout(() => setRecovering(false), 3000);
-      return () => clearTimeout(timeout);
-    }
-  }, [recovering, connected]);
-
-  // Server rejected registration (game was reset, status is 'init')
-  // Clear stale localStorage and show login immediately
-  useEffect(() => {
-    if (state.registrationRejected) {
-      localStorage.removeItem(PLAYER_ID_KEY);
-      localStorage.removeItem(PLAYER_NAME_KEY);
-      recoveryAttempted.current = false;
-      setRecovering(false);
-    }
-  }, [state.registrationRejected]);
-
-  // Full reset clears player identity
-  const prevStatus = useRef(state.status);
-  useEffect(() => {
-    if (state.status === 'init' && !state.playerId && prevStatus.current !== 'init') {
-      localStorage.removeItem(PLAYER_ID_KEY);
-      localStorage.removeItem(PLAYER_NAME_KEY);
-      recoveryAttempted.current = false;
-      setRecovering(false);
-    }
-    prevStatus.current = state.status;
-  }, [state.status, state.playerId]);
-
-  // Show pink spinner during recovery
-  if (recovering && !state.playerId) {
+  if (phase === 'loading' || phase === 'recovering') {
     return (
       <Shell>
         <div className="flex-1 flex flex-col items-center justify-center">
           <div className="text-5xl animate-pulse mb-4">✨</div>
           <p className="text-pink-400 font-bold text-lg">{t('app.recovering')}</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (state.status === 'init' && !state.playerId) {
+    return (
+      <Shell>
+        <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
+          <p className="text-5xl mb-3">🎀✨</p>
+          <h1 className="font-black text-3xl text-pink-500 mb-4" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>
+            {t('app.title')}
+          </h1>
+          <div className="text-6xl mb-4 animate-pulse">⏳</div>
+          <p className="font-bold text-xl text-pink-500">{t('player.waiting.init')}</p>
+          <p className="text-pink-300 text-sm mt-2">{t('player.waiting.hint')}</p>
         </div>
       </Shell>
     );
@@ -94,7 +169,6 @@ export default function PlayerApp() {
     <Shell>
       <ConnDot connected={connected} />
       <PlayerHeader name={state.playerName} score={state.totalScore} rank={myRank} total={playerCount} />
-
       {(status === 'init' || status === 'accepting' || status === 'waiting') && <WaitingScreen status={status} />}
       {status === 'answering' && !state.myAnswer && <AnswerScreen quiz={state.currentQuiz} send={send} />}
       {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} />}
@@ -107,7 +181,7 @@ export default function PlayerApp() {
   );
 }
 
-/* ── Kawaii shell wrapper ── */
+/* ── Shell ── */
 function Shell({ children }) {
   return (
     <div className="min-h-dvh flex flex-col relative overflow-hidden" style={{
@@ -128,7 +202,7 @@ function Shell({ children }) {
 
 function ConnDot({ connected }) {
   return (
-    <div className="fixed top-2 left-2 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/60 backdrop-blur-sm text-xs">
+    <div className="fixed top-2 right-2 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/60 backdrop-blur-sm text-xs">
       <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} />
       <span className="text-pink-400">{connected ? t('app.connecting') : t('app.reconnecting')}</span>
     </div>
@@ -149,7 +223,6 @@ function PlayerHeader({ name, score, rank, total }) {
   );
 }
 
-/* ── Login ── */
 function LoginScreen({ send, connected }) {
   const { dispatch, state } = useGame();
   const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || '');
@@ -207,7 +280,6 @@ function LoginScreen({ send, connected }) {
   );
 }
 
-/* ── Header ── */
 function WaitingScreen({ status }) {
   const msg = status === 'init' ? t('player.waiting.init')
     : status === 'accepting' ? t('player.waiting.accepting')
@@ -221,17 +293,13 @@ function WaitingScreen({ status }) {
   );
 }
 
-/* ── Answer ── */
 function AnswerScreen({ quiz, send }) {
   const [textAnswer, setTextAnswer] = useState('');
-
   if (!quiz) return null;
 
-  // Choice: submit immediately on click
   const handleChoice = (i) => {
     send({ action: 'submit_answer', quizId: quiz.quizId, choiceIndex: i });
   };
-
   const handleTextSubmit = () => {
     if (!textAnswer.trim()) return;
     send({ action: 'submit_answer', quizId: quiz.quizId, answerText: textAnswer.trim() });
@@ -245,23 +313,21 @@ function AnswerScreen({ quiz, send }) {
         </span>
         {quiz.cornerTitle && <p className="text-pink-300 text-xs mt-1">{quiz.cornerTitle}</p>}
       </div>
-
       <div className="bg-white/70 backdrop-blur-sm rounded-2xl border-2 border-pink-100 p-5 mb-6 shadow-sm">
         <p className="text-lg leading-relaxed text-gray-700 font-bold">{quiz.questionText}</p>
         <p className="text-right text-yellow-500 text-sm font-bold mt-2">{t('player.answer.points', { pts: quiz.points })}</p>
       </div>
-
       <div className="flex-1">
         {quiz.questionType === 'text' ? (
-          <div className="flex gap-2">
+          <div>
             <input type="text" value={textAnswer}
               onChange={(e) => setTextAnswer(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleTextSubmit()}
               placeholder={t('player.answer.textPlaceholder')}
-              className="flex-1 bg-white/70 border-2 border-pink-200 rounded-xl px-4 py-4 text-xl text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
+              className="w-full bg-white/70 border-2 border-pink-200 rounded-xl px-4 py-4 text-xl text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
               autoFocus />
             <button onClick={handleTextSubmit} disabled={!textAnswer.trim()}
-              className="px-5 bg-gradient-to-r from-pink-400 to-rose-400 text-white font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95 shrink-0">
+              className="w-full mt-3 px-6 py-4 bg-gradient-to-r from-pink-400 to-rose-400 text-white text-lg font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95">
               {t('player.answer.submit')}
             </button>
           </div>
@@ -280,7 +346,6 @@ function AnswerScreen({ quiz, send }) {
   );
 }
 
-/* ── Submitted ── */
 function SubmittedScreen({ answer }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
@@ -295,7 +360,6 @@ function SubmittedScreen({ answer }) {
   );
 }
 
-/* ── Judging ── */
 function JudgingScreen({ answer }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
@@ -312,10 +376,8 @@ function JudgingScreen({ answer }) {
 }
 
 function ResultScreen({ myAnswer, judgment, revealData, score }) {
-  // If player answered but no judgment received, treat as incorrect (no ○ pressed)
   const isCorrect = judgment?.isCorrect === true;
   const answered = !!myAnswer;
-
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
       {isCorrect && <PinkConfetti />}
@@ -326,9 +388,7 @@ function ResultScreen({ myAnswer, judgment, revealData, score }) {
          <span className="text-pink-300">{t('player.result.noAnswer')}</span>}
       </p>
       {isCorrect && judgment.pointsAwarded > 0 && (
-        <p className="font-black text-2xl text-yellow-500 animate-count-up">
-          {t('player.result.addPoints', { pts: judgment.pointsAwarded })}
-        </p>
+        <p className="font-black text-2xl text-yellow-500 animate-count-up">{t('player.result.addPoints', { pts: judgment.pointsAwarded })}</p>
       )}
       {revealData && (
         <div className="bg-white/70 rounded-2xl border-2 border-pink-200 p-5 text-center mt-6 w-full max-w-sm">
@@ -344,10 +404,8 @@ function ResultScreen({ myAnswer, judgment, revealData, score }) {
   );
 }
 
-/* ── Scores ── */
 function ScoresScreen({ rankings, playerId }) {
-  const sorted = [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
-    .map((r, i) => ({ ...r, rank: i + 1 }));
+  const sorted = [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((r, i) => ({ ...r, rank: i + 1 }));
   return (
     <div className="flex-1 flex flex-col px-4 py-6 animate-fade-in">
       <h2 className="font-black text-2xl text-center text-pink-500 mb-6">{t('player.scores.title')}</h2>
@@ -358,9 +416,7 @@ function ScoresScreen({ rankings, playerId }) {
             <div key={r.playerId || i} className={`flex items-center gap-3 px-4 py-3 rounded-xl ${
               isMe ? 'bg-pink-100 border-2 border-pink-300' : 'bg-white/50 border border-pink-100'
             }`}>
-              <span className="font-black text-pink-400 w-8 text-center">
-                {i < 3 ? ['🥇','🥈','🥉'][i] : r.rank}
-              </span>
+              <span className="font-black text-pink-400 w-8 text-center">{i < 3 ? ['🥇','🥈','🥉'][i] : r.rank}</span>
               <span className={`flex-1 font-bold truncate ${isMe ? 'text-pink-600' : 'text-gray-600'}`}>
                 {r.name} {isMe && t('player.scores.you')}
               </span>
@@ -373,7 +429,6 @@ function ScoresScreen({ rankings, playerId }) {
   );
 }
 
-/* ── Pink Confetti ── */
 function PinkConfetti() {
   const colors = ['#ff6b9d', '#ffd700', '#ff9ecd', '#ffb6c1', '#f0a0ff', '#87ceeb'];
   return (
