@@ -11,16 +11,8 @@ import {
 import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
 
 /**
- * Calculate logarithmic points based on correct-answer rank.
- * Rank 1 (fastest) gets full basePoints.
- * Lower ranks get progressively fewer points using ln decay.
- *
- * Formula: points = max(1, round(basePoints * ln(2) / ln(rank + 1)))
- *   Rank 1 => basePoints * 1.0
- *   Rank 2 => basePoints * 0.63
- *   Rank 3 => basePoints * 0.50
- *   Rank 5 => basePoints * 0.39
- *   Rank 10 => basePoints * 0.29
+ * Logarithmic point calculation based on answer-speed rank.
+ * Rank 1 (fastest) gets full basePoints; lower ranks decay via ln.
  */
 function calcPoints(basePoints, rank) {
   if (rank <= 0) return basePoints;
@@ -46,14 +38,19 @@ export async function handleJudge(connectionId, body) {
   const answer = await getAnswer(quizId, playerId);
   if (!answer) return { statusCode: 404, body: 'Answer not found' };
 
+  // Guard: if already judged, ignore (prevent double scoring)
+  if (answer.isCorrect !== null) {
+    return { statusCode: 200, body: 'Already judged' };
+  }
+
   const gameState = await getGameState();
   const basePoints = quiz.points || 10;
 
   if (isCorrect) {
-    // First, mark as correct temporarily to include in ranking
+    // Mark correct temporarily to include in ranking calculation
     await updateAnswerJudgment(quizId, playerId, true, 0);
 
-    // Calculate rank by answeredAt among ALL correct answers (including this one)
+    // Calculate rank by answeredAt among ALL correct answers
     const allAnswers = await getAnswersForQuiz(quizId);
     const correctAnswers = allAnswers
       .filter((a) => a.isCorrect === true)
@@ -61,16 +58,7 @@ export async function handleJudge(connectionId, body) {
     const rank = correctAnswers.findIndex((a) => a.playerId === playerId) + 1;
     const pointsAwarded = calcPoints(basePoints, rank);
 
-    // Revert previous judgment if was already correct with different points
-    if (answer.isCorrect === true && answer.pointsAwarded > 0) {
-      const player = await getPlayer(playerId);
-      if (player) {
-        player.totalScore = Math.max(0, (player.totalScore || 0) - (answer.pointsAwarded || 0));
-        player.correctCount = Math.max(0, (player.correctCount || 0) - 1);
-        await putPlayer(player);
-      }
-    }
-
+    // Update with actual points
     await updateAnswerJudgment(quizId, playerId, true, pointsAwarded);
 
     // Add points to player
@@ -80,7 +68,6 @@ export async function handleJudge(connectionId, body) {
       player.correctCount = (player.correctCount || 0) + 1;
       await putPlayer(player);
 
-      // Notify the player
       if (player.connectionId) {
         await sendToConnection(player.connectionId, {
           event: 'judgment_result',
@@ -92,7 +79,7 @@ export async function handleJudge(connectionId, body) {
       }
     }
 
-    // Broadcast updated correct player list to display (real-time during answering/judging)
+    // Broadcast live correct list to display
     const updatedAnswers = await getAnswersForQuiz(quizId);
     const correctPlayers = updatedAnswers
       .filter((a) => a.isCorrect === true)
@@ -113,7 +100,6 @@ export async function handleJudge(connectionId, body) {
       correctPlayers,
     });
 
-    // Notify admin
     await broadcastToRole('admin', {
       event: 'judgment_updated',
       quizId,
@@ -125,16 +111,6 @@ export async function handleJudge(connectionId, body) {
     });
   } else {
     // Marking as incorrect
-    // Revert points if was previously correct
-    if (answer.isCorrect === true && answer.pointsAwarded > 0) {
-      const player = await getPlayer(playerId);
-      if (player) {
-        player.totalScore = Math.max(0, (player.totalScore || 0) - (answer.pointsAwarded || 0));
-        player.correctCount = Math.max(0, (player.correctCount || 0) - 1);
-        await putPlayer(player);
-      }
-    }
-
     await updateAnswerJudgment(quizId, playerId, false, 0);
 
     const player = await getPlayer(playerId);
@@ -147,27 +123,6 @@ export async function handleJudge(connectionId, body) {
         totalScore: player.totalScore,
       });
     }
-
-    // Update display correct list (may have shrunk)
-    const updatedAnswers = await getAnswersForQuiz(quizId);
-    const correctPlayers = updatedAnswers
-      .filter((a) => a.isCorrect === true)
-      .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt))
-      .map((a, i) => ({
-        rank: i + 1,
-        playerId: a.playerId,
-        playerName: a.playerName,
-        pointsAwarded: a.pointsAwarded,
-        elapsedMs: gameState.questionStartedAt
-          ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
-          : null,
-      }));
-
-    await broadcastToRole('display', {
-      event: 'live_correct_update',
-      quizId,
-      correctPlayers,
-    });
 
     await broadcastToRole('admin', {
       event: 'judgment_updated',

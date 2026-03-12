@@ -5,6 +5,55 @@ import { ADMIN_SECRET_KEY } from '../../config';
 import { ConnectionBadge, Button, Card, SectionTitle, formatElapsedMs } from '../../components/UI';
 import { t } from '../../i18n';
 
+/**
+ * Parse a CSV string into quiz objects.
+ * Pipe-delimited for array fields (acceptableAnswers, choices).
+ */
+function parseCsvToQuizzes(csvText) {
+  const lines = csvText.trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error(t('admin.csv.noData'));
+
+  const header = lines[0].split(',').map(h => h.trim());
+  const quizzes = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const values = [];
+    let current = '';
+    let inQuotes = false;
+    for (const ch of line) {
+      if (ch === '"') { inQuotes = !inQuotes; continue; }
+      if (ch === ',' && !inQuotes) { values.push(current.trim()); current = ''; continue; }
+      current += ch;
+    }
+    values.push(current.trim());
+
+    const row = {};
+    header.forEach((col, idx) => { row[col] = values[idx] || ''; });
+
+    if (!row.questionText || !row.questionType) {
+      throw new Error(t('admin.csv.invalidRow', { row: i + 1 }));
+    }
+
+    const qNum = parseInt(row.questionNumber) || i;
+    quizzes.push({
+      quizId: `q${String(qNum).padStart(3, '0')}`,
+      questionNumber: qNum,
+      questionText: row.questionText,
+      questionType: row.questionType,
+      modelAnswer: row.modelAnswer || null,
+      acceptableAnswers: row.acceptableAnswers ? row.acceptableAnswers.split('|').map(s => s.trim()).filter(Boolean) : [],
+      choices: row.choices ? row.choices.split('|').map(s => s.trim()).filter(Boolean) : [],
+      correctChoiceIndex: row.correctChoiceIndex !== '' ? parseInt(row.correctChoiceIndex) : null,
+      points: parseInt(row.points) || 10,
+      order: qNum,
+    });
+  }
+  return quizzes;
+}
+
 export default function AdminApp() {
   const { state, dispatch } = useGame();
   const handleMessage = useMessageHandler();
@@ -15,7 +64,6 @@ export default function AdminApp() {
 
   useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
 
-  // On connect (F5 recovery or WS reconnect): re-authenticate if we have a saved secret
   useEffect(() => {
     if (connected && authedSecretRef.current) {
       send({ action: 'connect_role', role: 'admin', secret: authedSecretRef.current });
@@ -23,7 +71,6 @@ export default function AdminApp() {
     }
   }, [connected]);
 
-  // Persist secret on successful auth, reset on failure
   useEffect(() => {
     if (state.authed) {
       setSubmitting(false);
@@ -63,7 +110,7 @@ export default function AdminApp() {
   return (
     <div className="min-h-screen bg-quiz-bg p-4">
       <ConnectionBadge connected={connected} />
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 pl-28">
         <h1 className="font-display font-black text-xl text-quiz-text">{t('admin.dashboard.title')}</h1>
         <div className="flex items-center gap-3">
           <StatusBadge status={state.status} />
@@ -114,10 +161,11 @@ function ControlPanel({ state, send }) {
     setLoading(true);
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      const q = data.quizzes || data;
-      send({ action: 'load_quizzes', quizzes: Array.isArray(q) ? q : [q] });
-    } catch (err) { alert('JSON error: ' + err.message); }
+      const quizzes = parseCsvToQuizzes(text);
+      send({ action: 'load_quizzes', quizzes });
+    } catch (err) {
+      alert(t('admin.csv.error', { detail: err.message }));
+    }
     setLoading(false);
     if (fileRef.current) fileRef.current.value = '';
   };
@@ -129,36 +177,47 @@ function ControlPanel({ state, send }) {
   return (
     <Card>
       <SectionTitle>{t('admin.control.title')}</SectionTitle>
-      <div className="space-y-2">
+      <div className="min-h-[160px] space-y-2">
         {status === 'init' && (
           <>
-            <input ref={fileRef} type="file" accept=".json" onChange={handleLoadFile} className="hidden" />
+            <input ref={fileRef} type="file" accept=".csv" onChange={handleLoadFile} className="hidden" />
             <Button onClick={() => fileRef.current?.click()} disabled={loading} variant="teal" size="sm" className="w-full">
               {loading ? t('admin.control.loading') : t('admin.control.loadQuiz')}
             </Button>
           </>
         )}
-        {(status === 'accepting' || status === 'showing_answer') && nextQuiz && (
+
+        {(status === 'accepting' || status === 'showing_answer') && (
           <div>
-            <p className="text-quiz-muted text-xs mb-1">{t('admin.control.nextQuestion')} C{nextQuiz.cornerNumber}-Q{nextQuiz.questionNumber}</p>
-            <p className="text-quiz-text text-sm mb-2 truncate">{nextQuiz.questionText}</p>
-            <Button onClick={() => send({ action: 'start_question', quizId: nextQuiz.quizId })} variant="teal" size="sm" className="w-full">
-              {t('admin.control.startQuestion')}
-            </Button>
+            {nextQuiz ? (
+              <>
+                <p className="text-quiz-muted text-xs mb-1">{t('admin.control.nextQuestion')} Q{nextQuiz.questionNumber}</p>
+                <p className="text-quiz-text text-sm mb-2 truncate">{nextQuiz.questionText}</p>
+                <Button onClick={() => send({ action: 'start_question', quizId: nextQuiz.quizId })} variant="teal" size="sm" className="w-full">
+                  {t('admin.control.startQuestion')}
+                </Button>
+              </>
+            ) : (
+              <p className="text-quiz-muted text-sm">{t('admin.control.noMoreQuestions')}</p>
+            )}
           </div>
         )}
+
         {status === 'showing_answer' && allAsked && (
           <Button onClick={() => send({ action: 'show_scores' })} variant="purple" size="sm" className="w-full">{t('admin.control.showScores')}</Button>
         )}
+
         {status === 'answering' && (
           <Button onClick={() => send({ action: 'close_answers' })} variant="gold" size="sm" className="w-full">{t('admin.control.closeAnswers')}</Button>
         )}
+
         {status === 'judging' && (
           <Button onClick={() => send({ action: 'reveal_answer' })} variant="accent" size="sm" className="w-full">{t('admin.control.revealAnswer')}</Button>
         )}
-        <hr className="border-white/5 my-3" />
-        <Button onClick={handleResetAll} variant="danger" size="sm" className="w-full">{t('admin.control.resetAll')}</Button>
       </div>
+
+      <hr className="border-white/5 my-3" />
+      <Button onClick={handleResetAll} variant="danger" size="sm" className="w-full">{t('admin.control.resetAll')}</Button>
     </Card>
   );
 }
@@ -173,19 +232,18 @@ function CurrentQuestion({ quiz, state }) {
   return (
     <Card>
       <div className="flex items-center gap-2 mb-2">
-        <span className="px-2 py-0.5 rounded bg-quiz-accent/20 text-quiz-accent text-xs font-bold">C{quiz.cornerNumber}-Q{quiz.questionNumber}</span>
-        <span className="text-quiz-muted text-xs">{quiz.cornerTitle}</span>
+        <span className="px-2 py-0.5 rounded bg-quiz-accent/20 text-quiz-accent text-xs font-bold">Q{quiz.questionNumber}</span>
         <span className="ml-auto text-quiz-gold text-sm font-bold">+{quiz.points}pt</span>
       </div>
       <p className="font-body text-quiz-text text-base leading-relaxed">{quiz.questionText}</p>
       {quiz.modelAnswer && (
         <p className="mt-2 text-sm"><span className="text-quiz-muted">{t('admin.question.modelAnswer')} </span><span className="text-quiz-green font-bold">{quiz.modelAnswer}</span></p>
       )}
-      {quiz.choices && (
+      {quiz.choices && quiz.choices.length > 0 && (
         <div className="mt-2 space-y-1">
           {quiz.choices.map((c, i) => (
             <div key={i} className={`text-sm px-2 py-1 rounded ${i === quiz.correctChoiceIndex ? 'bg-quiz-green/20 text-quiz-green font-bold' : 'text-quiz-muted'}`}>
-              {String.fromCharCode(65 + i)}. {c} {i === quiz.correctChoiceIndex && '✓'}
+              {String.fromCharCode(65 + i)}. {c} {i === quiz.correctChoiceIndex && '\u2713'}
             </div>
           ))}
         </div>
@@ -202,15 +260,7 @@ function AnswerList({ state, send }) {
     send({ action: 'judge', quizId: currentQuiz.quizId, playerId, isCorrect });
   };
 
-  // Sort by answer time (earliest first) to ensure rank = answer speed
-  const sorted = [...answers].sort((a, b) => {
-    const tA = a.elapsedMs ?? Infinity;
-    const tB = b.elapsedMs ?? Infinity;
-    return tA - tB;
-  });
-
-  // Find the first unjudged answer — only this row's buttons are active
-  const firstUnjudgedIdx = sorted.findIndex(a => a.isCorrect == null);
+  const sorted = [...answers].sort((a, b) => (a.elapsedMs ?? Infinity) - (b.elapsedMs ?? Infinity));
 
   return (
     <Card>
@@ -219,12 +269,12 @@ function AnswerList({ state, send }) {
         {sorted.length === 0 ? (
           <p className="text-quiz-muted text-sm text-center py-4">{t('admin.answers.empty')}</p>
         ) : sorted.map((a, i) => {
-          const isActive = i === firstUnjudgedIdx;
+          const judged = a.isCorrect !== null;
           return (
             <div key={a.playerId} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
               a.isCorrect === true ? 'bg-quiz-green/10 border border-quiz-green/20' :
               a.isCorrect === false ? 'bg-quiz-accent/10 border border-quiz-accent/20' :
-              isActive ? 'bg-quiz-surface/80 border border-quiz-teal/30' : 'bg-quiz-surface/50'
+              'bg-quiz-surface/50'
             }`}>
               <span className="text-quiz-muted font-mono w-6 text-center text-xs">{i + 1}</span>
               <span className="font-bold text-quiz-text truncate w-20">{a.playerName}</span>
@@ -236,20 +286,20 @@ function AnswerList({ state, send }) {
                 <span className="text-quiz-gold text-xs font-bold whitespace-nowrap">+{a.pointsAwarded}</span>
               )}
               <div className="flex gap-1 ml-1 shrink-0">
-                <button onClick={() => handleJudge(a.playerId, true)}
-                  disabled={!isActive && a.isCorrect == null}
+                <button onClick={() => !judged && handleJudge(a.playerId, true)}
+                  disabled={judged}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
                     a.isCorrect === true ? 'bg-quiz-green text-white' :
-                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green' :
-                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
-                  }`}>○</button>
-                <button onClick={() => handleJudge(a.playerId, false)}
-                  disabled={!isActive && a.isCorrect == null}
+                    judged ? 'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed' :
+                    'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green'
+                  }`}>{'\u25CB'}</button>
+                <button onClick={() => !judged && handleJudge(a.playerId, false)}
+                  disabled={judged}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
                     a.isCorrect === false ? 'bg-quiz-accent text-white' :
-                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent' :
-                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
-                  }`}>×</button>
+                    judged ? 'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed' :
+                    'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent'
+                  }`}>{'\u00D7'}</button>
               </div>
             </div>
           );
@@ -292,9 +342,9 @@ function QuizList({ quizzes, history }) {
           const asked = history.includes(q.quizId);
           return (
             <div key={q.quizId} className={`text-sm py-1 border-b border-white/5 last:border-0 ${asked ? 'opacity-40' : ''}`}>
-              <span className="font-mono text-xs text-quiz-muted">C{q.cornerNumber}-Q{q.questionNumber}</span>
-              <span className="ml-2 text-quiz-text">{q.questionText?.substring(0, 35)}...</span>
-              {asked && <span className="text-quiz-green text-xs ml-1">✓</span>}
+              <span className="font-mono text-xs text-quiz-muted">Q{q.questionNumber}</span>
+              <span className="ml-2 text-quiz-text">{q.questionText?.substring(0, 40)}...</span>
+              {asked && <span className="text-quiz-green text-xs ml-1">{'\u2713'}</span>}
             </div>
           );
         })}

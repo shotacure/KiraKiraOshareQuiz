@@ -4,18 +4,6 @@ import { useWebSocket } from '../../hooks/useWebSocket';
 import { PLAYER_ID_KEY, PLAYER_NAME_KEY } from '../../config';
 import { t } from '../../i18n';
 
-/**
- * Recovery flow on F5 / reconnect:
- *
- *   phase='loading'    → WS connected, send get_state, wait for server response
- *   phase='recovering' → server responded with accepting+, localStorage has saved ID,
- *                         send register, wait for registered event
- *   phase='ready'      → show appropriate screen based on state
- *
- * Key: we track `serverResponded` to distinguish "initial default status=init"
- * from "server actually told us status=init". Only after server responds
- * do we evaluate the status.
- */
 export default function PlayerApp() {
   const { state, dispatch } = useGame();
   const handleMessage = useMessageHandler();
@@ -35,38 +23,24 @@ export default function PlayerApp() {
     send({ action: 'get_state' });
   }, [connected]);
 
-  // Detect server response: any state_sync, registered, or full_reset sets the real status
-  // We watch for status changes that differ from the initial default
+  // Detect actual server response (status change beyond initial default)
   const statusChangeCount = useRef(0);
   useEffect(() => {
     statusChangeCount.current += 1;
-    // First render has status='init' from initialState — ignore it
     if (statusChangeCount.current <= 1) return;
     serverResponded.current = true;
   }, [state.status]);
 
-  // Also mark responded on registrationRejected (server explicitly replied)
-  useEffect(() => {
-    if (state.registrationRejected) serverResponded.current = true;
-  }, [state.registrationRejected]);
+  useEffect(() => { if (state.registrationRejected) serverResponded.current = true; }, [state.registrationRejected]);
+  useEffect(() => { if (state.playerId) serverResponded.current = true; }, [state.playerId]);
 
-  // Also mark responded on playerId change (registered event arrived)
-  useEffect(() => {
-    if (state.playerId) serverResponded.current = true;
-  }, [state.playerId]);
-
-  // Phase 2: once server responded, decide whether to recover
+  // Phase 2: once server responded, decide recovery
   useEffect(() => {
     if (phase !== 'loading') return;
-    if (!serverResponded.current) return; // Still waiting for server
+    if (!serverResponded.current) return;
 
-    if (state.status === 'init') {
-      // Game truly in init — no recovery, show preparing screen
-      setPhase('ready');
-      return;
-    }
+    if (state.status === 'init') { setPhase('ready'); return; }
 
-    // Status is accepting or later — try to recover
     if (connected && !recoveryDone.current) {
       const savedId = localStorage.getItem(PLAYER_ID_KEY);
       const savedName = localStorage.getItem(PLAYER_NAME_KEY);
@@ -99,7 +73,7 @@ export default function PlayerApp() {
     }
   }, [state.registrationRejected]);
 
-  // Timeout: if loading/recovering takes too long, give up
+  // Timeout
   useEffect(() => {
     if (phase === 'loading' || phase === 'recovering') {
       const timer = setTimeout(() => setPhase('ready'), 5000);
@@ -107,7 +81,7 @@ export default function PlayerApp() {
     }
   }, [phase]);
 
-  // Full reset broadcast — clear everything
+  // Full reset
   const prevStatus = useRef(state.status);
   useEffect(() => {
     if (state.status === 'init' && !state.playerId && prevStatus.current !== 'init' && serverResponded.current) {
@@ -119,7 +93,7 @@ export default function PlayerApp() {
     prevStatus.current = state.status;
   }, [state.status, state.playerId]);
 
-  // WS reconnect (connection drop, not F5): re-register if already ready
+  // WS reconnect (not F5)
   useEffect(() => {
     if (connected && state.playerId && state.playerName && phase === 'ready') {
       send({ action: 'register', name: state.playerName, playerId: state.playerId });
@@ -140,6 +114,7 @@ export default function PlayerApp() {
     );
   }
 
+  // Init: show preparing screen
   if (state.status === 'init' && !state.playerId) {
     return (
       <Shell>
@@ -156,8 +131,27 @@ export default function PlayerApp() {
     );
   }
 
+  // Not registered and registration is closed (past accepting)
+  if (!state.playerId && state.status !== 'accepting') {
+    return (
+      <Shell>
+        <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
+          <p className="text-5xl mb-3">🎀✨</p>
+          <h1 className="font-black text-3xl text-pink-500 mb-4" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>
+            {t('app.title')}
+          </h1>
+          <div className="text-5xl mb-4">🚫</div>
+          <p className="font-bold text-xl text-pink-500">{t('player.waiting.closed')}</p>
+          <p className="text-pink-300 text-sm mt-2">{t('player.waiting.closedHint')}</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  // Not registered, accepting: show login
   if (!state.playerId) return <LoginScreen send={send} connected={connected} />;
 
+  // Registered: show game UI
   const { status } = state;
   const playerCount = state.players?.length || 0;
   const myRank = state.players
@@ -181,7 +175,6 @@ export default function PlayerApp() {
   );
 }
 
-/* ── Shell ── */
 function Shell({ children }) {
   return (
     <div className="min-h-dvh flex flex-col relative overflow-hidden" style={{
@@ -231,15 +224,18 @@ function LoginScreen({ send, connected }) {
 
   const handleSubmit = () => {
     if (!name.trim() || !connected) return;
-    setSubmitting(true);
-    setNameError(null);
+    setSubmitting(true); setNameError(null);
     send({ action: 'register', name: name.trim(), playerId: localStorage.getItem(PLAYER_ID_KEY) });
     localStorage.setItem(PLAYER_NAME_KEY, name.trim());
   };
 
   useEffect(() => {
-    if (state.lastError?.includes('既に使われています')) {
-      setNameError(state.lastError);
+    if (state.lastError?.code === 'name_taken') {
+      setNameError(state.lastError.message);
+      setSubmitting(false);
+      dispatch({ type: 'CLEAR_ERROR' });
+    } else if (state.lastError) {
+      setNameError(state.lastError.message || state.lastError);
       setSubmitting(false);
       dispatch({ type: 'CLEAR_ERROR' });
     }
@@ -255,21 +251,16 @@ function LoginScreen({ send, connected }) {
       <div className="flex-1 flex flex-col items-center justify-center px-6">
         <div className="animate-fade-in text-center mb-10">
           <p className="text-5xl mb-3">🎀✨</p>
-          <h1 className="font-black text-3xl text-pink-500" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>
-            {t('app.title')}
-          </h1>
+          <h1 className="font-black text-3xl text-pink-500" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>{t('app.title')}</h1>
           <p className="text-pink-300 mt-2 text-sm">{t('player.login.subtitle')}</p>
         </div>
         <div className="w-full max-w-sm bg-white/70 backdrop-blur-sm rounded-3xl border-2 border-pink-200 p-5 shadow-xl shadow-pink-100 animate-slide-up">
-          {nameError && (
-            <div className="mb-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-500 text-sm">{nameError}</div>
-          )}
+          {nameError && <div className="mb-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-500 text-sm">{nameError}</div>}
           <input type="text" value={name}
             onChange={(e) => { setName(e.target.value); setNameError(null); }}
             onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
             placeholder={t('player.login.placeholder')} maxLength={20}
-            className="w-full bg-pink-50 border-2 border-pink-200 rounded-xl px-4 py-3 text-lg text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
-            autoFocus />
+            className="w-full bg-pink-50 border-2 border-pink-200 rounded-xl px-4 py-3 text-lg text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400" autoFocus />
           <button onClick={handleSubmit} disabled={!name.trim() || !connected || submitting}
             className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-pink-400 to-rose-400 text-white font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95">
             {submitting ? t('player.login.submitting') : t('player.login.submit')}
@@ -309,9 +300,8 @@ function AnswerScreen({ quiz, send }) {
     <div className="flex-1 flex flex-col px-4 py-6 animate-slide-up">
       <div className="text-center mb-4">
         <span className="inline-block px-3 py-1 rounded-full bg-pink-100 text-pink-500 text-xs font-bold border border-pink-200">
-          {t('player.answer.corner', { corner: quiz.cornerNumber, num: quiz.questionNumber })}
+          {t('player.answer.question', { num: quiz.questionNumber })}
         </span>
-        {quiz.cornerTitle && <p className="text-pink-300 text-xs mt-1">{quiz.cornerTitle}</p>}
       </div>
       <div className="bg-white/70 backdrop-blur-sm rounded-2xl border-2 border-pink-100 p-5 mb-6 shadow-sm">
         <p className="text-lg leading-relaxed text-gray-700 font-bold">{quiz.questionText}</p>
@@ -324,8 +314,7 @@ function AnswerScreen({ quiz, send }) {
               onChange={(e) => setTextAnswer(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleTextSubmit()}
               placeholder={t('player.answer.textPlaceholder')}
-              className="w-full bg-white/70 border-2 border-pink-200 rounded-xl px-4 py-4 text-xl text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
-              autoFocus />
+              className="w-full bg-white/70 border-2 border-pink-200 rounded-xl px-4 py-4 text-xl text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400" autoFocus />
             <button onClick={handleTextSubmit} disabled={!textAnswer.trim()}
               className="w-full mt-3 px-6 py-4 bg-gradient-to-r from-pink-400 to-rose-400 text-white text-lg font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95">
               {t('player.answer.submit')}

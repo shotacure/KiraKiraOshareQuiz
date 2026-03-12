@@ -6,7 +6,6 @@ import { handleSubmitAnswer } from './handlers/submitAnswer.mjs';
 import { handleStartQuestion } from './handlers/startQuestion.mjs';
 import { handleCloseAnswers } from './handlers/closeAnswers.mjs';
 import { handleJudge } from './handlers/judge.mjs';
-import { handleJudgeBulk } from './handlers/judgeBulk.mjs';
 import { handleRevealAnswer } from './handlers/revealAnswer.mjs';
 import { handleShowScores } from './handlers/showScores.mjs';
 import { handleResetAll } from './handlers/resetAll.mjs';
@@ -20,7 +19,6 @@ const ROUTES = {
   start_question: handleStartQuestion,
   close_answers: handleCloseAnswers,
   judge: handleJudge,
-  judge_bulk: handleJudgeBulk,
   reveal_answer: handleRevealAnswer,
   show_scores: handleShowScores,
   reset_all: handleResetAll,

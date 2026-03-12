@@ -18,44 +18,43 @@ export async function handleSubmitAnswer(connectionId, body) {
   if (!conn || conn.role !== 'player' || !conn.playerId) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: 'プレイヤーとして登録されていません',
+      code: 'not_a_player',
+      message: 'not_a_player',
     });
     return { statusCode: 403, body: 'Not a player' };
   }
 
-  // Verify game is in answering state
   const gameState = await getGameState();
   if (gameState.status !== 'answering') {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '現在回答を受け付けていません',
+      code: 'not_accepting_answers',
+      message: 'not_accepting_answers',
     });
     return { statusCode: 400, body: 'Not accepting answers' };
   }
 
-  // Verify quiz matches current question
   if (gameState.currentQuizId !== quizId) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '問題IDが一致しません',
+      code: 'quiz_id_mismatch',
+      message: 'quiz_id_mismatch',
     });
     return { statusCode: 400, body: 'Quiz ID mismatch' };
   }
 
-  // Check for duplicate answer
   const existingAnswer = await getAnswer(quizId, conn.playerId);
   if (existingAnswer) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: 'すでに回答済みです',
+      code: 'already_answered',
+      message: 'already_answered',
     });
     return { statusCode: 400, body: 'Already answered' };
   }
 
-  // Get player info and quiz info
   const player = await getPlayer(conn.playerId);
   const quiz = await getQuiz(quizId);
-
   if (!player || !quiz) {
     return { statusCode: 400, body: 'Invalid player or quiz' };
   }
@@ -65,7 +64,6 @@ export async function handleSubmitAnswer(connectionId, body) {
     ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
     : null;
 
-  // Build answer record — no auto-judging, isCorrect stays null
   const answer = {
     quizId,
     playerId: conn.playerId,
@@ -77,27 +75,22 @@ export async function handleSubmitAnswer(connectionId, body) {
 
   if (quiz.questionType === 'choice') {
     answer.choiceIndex = choiceIndex;
-    answer.answerText = quiz.choices?.[choiceIndex] || `選択肢${choiceIndex}`;
+    answer.answerText = quiz.choices?.[choiceIndex] || `Choice ${choiceIndex}`;
   } else {
     answer.answerText = (answerText || '').trim();
   }
 
-  // Auto-judge on submission
   await putAnswer(answer);
 
-  // Update player score immediately if auto-judged correct
-  // Increment answer count
   player.answerCount = (player.answerCount || 0) + 1;
   await putPlayer(player);
 
-  // Confirm to player
   await sendToConnection(connectionId, {
     event: 'answer_submitted',
     answerText: answer.answerText,
     answeredAt: now,
   });
 
-  // Notify admin
   await broadcastToRole('admin', {
     event: 'new_answer',
     playerId: conn.playerId,
@@ -109,7 +102,6 @@ export async function handleSubmitAnswer(connectionId, body) {
     isCorrect: null,
   });
 
-  // Notify display with answer count only (no correct players — judging is manual)
   const allAnswers = await getAnswersForQuiz(quizId);
   const allPlayers = await getAllPlayers();
   await broadcastToRole('display', {

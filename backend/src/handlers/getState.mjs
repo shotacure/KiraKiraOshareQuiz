@@ -26,14 +26,11 @@ export async function handleGetState(connectionId) {
     totalQuizCount: allQuizzes.length,
   };
 
-  // If there's an active question, include question info
   if (gameState.currentQuizId) {
     const quiz = await getQuiz(gameState.currentQuizId);
     if (quiz) {
       payload.question = {
         quizId: quiz.quizId,
-        cornerNumber: quiz.cornerNumber,
-        cornerTitle: quiz.cornerTitle,
         questionNumber: quiz.questionNumber,
         questionText: quiz.questionText,
         questionType: quiz.questionType,
@@ -48,7 +45,6 @@ export async function handleGetState(connectionId) {
             : quiz.modelAnswer;
       }
 
-      // For admin, include answers
       if (conn.role === 'admin') {
         const answers = await getAnswersForQuiz(gameState.currentQuizId);
         payload.answers = answers.map((a) => ({
@@ -65,7 +61,6 @@ export async function handleGetState(connectionId) {
       }
     }
 
-    // For player, include their answer
     if (conn.role === 'player' && conn.playerId) {
       const answer = await getAnswer(gameState.currentQuizId, conn.playerId);
       if (answer) {
@@ -79,7 +74,6 @@ export async function handleGetState(connectionId) {
     }
   }
 
-  // Include player count for display
   if (conn.role === 'display' || conn.role === 'admin') {
     const players = await getAllPlayers();
     payload.players = players.map((p, i) => ({
@@ -91,7 +85,6 @@ export async function handleGetState(connectionId) {
     }));
   }
 
-  // If showing scores, include rankings
   if (gameState.status === 'showing_scores') {
     const players = await getAllPlayers();
     payload.rankings = players.map((p, i) => ({

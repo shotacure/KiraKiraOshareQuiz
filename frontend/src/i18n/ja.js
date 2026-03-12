@@ -21,13 +21,14 @@ export default {
   'player.waiting.accepting': '参加登録できたよ！🎉',
   'player.waiting.default': '次の問題をまってね',
   'player.waiting.hint': '出題されたら自動でかわるよ',
+  'player.waiting.closed': '参加受付は終了しました',
+  'player.waiting.closedHint': 'このクイズには参加できません',
 
   // ── Player: Answer ──
-  'player.answer.corner': '第{corner}コーナー Q{num}',
+  'player.answer.question': 'Q{num}',
   'player.answer.points': '+{pts}pt ⭐',
   'player.answer.textPlaceholder': 'こたえを入力...',
   'player.answer.submit': '💖 回答',
-  'player.answer.choiceSubmitting': '送信中...',
 
   // ── Player: Submitted ──
   'player.submitted.title': '送信できたよ！',
@@ -72,7 +73,7 @@ export default {
 
   // ── Admin: Control ──
   'admin.control.title': '進行コントロール',
-  'admin.control.loadQuiz': '📁 クイズJSON読み込み',
+  'admin.control.loadQuiz': '📁 クイズCSV読み込み',
   'admin.control.loading': '読み込み中...',
   'admin.control.nextQuestion': '次の問題:',
   'admin.control.startQuestion': '▶ 出題する',
@@ -81,9 +82,15 @@ export default {
   'admin.control.showScores': '🏆 最終成績発表',
   'admin.control.resetAll': '🔄 全データリセット',
   'admin.control.resetConfirm': '全データを完全にリセットします。よろしいですか？\n(クイズデータ・参加者・回答が全て削除されます)',
+  'admin.control.noMoreQuestions': '全問出題済み',
+
+  // ── Admin: CSV ──
+  'admin.csv.error': 'CSV読み込みエラー: {detail}',
+  'admin.csv.noData': 'CSVにデータ行がありません',
+  'admin.csv.invalidRow': '{row}行目: questionText と questionType は必須です',
 
   // ── Admin: Question ──
-  'admin.question.empty.init': 'クイズデータを読み込んでください',
+  'admin.question.empty.init': 'クイズCSVを読み込んでください',
   'admin.question.empty.accepting': '参加者を待っています。準備ができたら出題してください',
   'admin.question.empty.default': '問題なし',
   'admin.question.modelAnswer': '模範解答:',
@@ -113,7 +120,6 @@ export default {
   'display.accepting.unit': '名 🌸',
 
   // ── Display: Question ──
-  'display.question.corner': '第{corner}コーナー',
   'display.question.answer': '回答してね！💖',
   'display.question.points': '+{pts} pt ⭐',
   'display.question.correctTitle': '✨ 正解者 ✨',
@@ -132,4 +138,21 @@ export default {
 
   // ── Display: Scores ──
   'display.scores.title': '最終成績発表！',
+
+  // ── Server error codes → user-facing messages ──
+  'error.name_required': '名前を入力してください',
+  'error.name_taken': '「{name}」は既に使われています。別の名前を入力してください',
+  'error.invalid_role': '無効なロールです',
+  'error.wrong_password': 'パスワードが正しくありません',
+  'error.not_init_state': '初期状態でのみクイズを読み込めます。リセットしてください。',
+  'error.empty_quizzes': 'クイズデータが空です',
+  'error.invalid_quiz': '問題 {row}: questionText と questionType は必須です',
+  'error.invalid_state': '現在の状態では出題できません',
+  'error.quiz_id_required': '問題IDが指定されていません',
+  'error.quiz_not_found': '問題が見つかりません',
+  'error.not_a_player': 'プレイヤーとして登録されていません',
+  'error.not_accepting_answers': '現在回答を受け付けていません',
+  'error.quiz_id_mismatch': '問題IDが一致しません',
+  'error.already_answered': 'すでに回答済みです',
+  'error.unknown': '不明なエラーが発生しました',
 };

@@ -40,7 +40,6 @@ export default function DisplayApp() {
     dispatch({ type: 'SET_ROLE', payload: 'display' });
   };
 
-  // Login screen (not 16:9 - just centered)
   if (!state.authed) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ fontFamily: "'Zen Maru Gothic', sans-serif", background: 'linear-gradient(135deg,#fff0f5,#ffe4ec)' }}>
@@ -60,15 +59,12 @@ export default function DisplayApp() {
     );
   }
 
-  // Main display - 16:9 responsive
   return (
     <div className="w-screen h-screen overflow-hidden relative" style={{
       fontFamily: "'Zen Maru Gothic', 'Quicksand', sans-serif",
       background: 'linear-gradient(135deg, #fff0f5 0%, #ffe4ec 30%, #ffd6e7 60%, #fff0f5 100%)',
     }}>
-      {/* Floating sparkles background */}
       <Sparkles />
-      {/* Connection dot */}
       <div className="fixed" style={{ top: '0.5vw', right: '0.5vw', zIndex: 50 }}>
         <span className={`inline-block rounded-full ${connected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`}
           style={{ width: '0.6vw', height: '0.6vw' }} />
@@ -85,7 +81,6 @@ export default function DisplayApp() {
   );
 }
 
-/* ── Sparkles background ── */
 function Sparkles() {
   const s = Array.from({ length: 20 }, (_, i) => ({
     id: i, left: `${Math.random() * 100}%`, top: `${Math.random() * 100}%`,
@@ -98,7 +93,6 @@ function Sparkles() {
   );
 }
 
-/* ── Confetti (pink themed) ── */
 function PinkConfetti() {
   const c = ['#ff6b9d', '#ffd700', '#ff9ecd', '#ffb6c1', '#f0a0ff', '#87ceeb'];
   return (
@@ -177,11 +171,6 @@ function QuestionView({ quiz, answerCount, answerTotal, qIndex, qTotal, liveCorr
     <div className="w-full h-full flex">
       <div className="flex flex-col items-center justify-center" style={{ width: '68%', padding: '2vw' }}>
         <div className="flex items-center" style={{ gap: '1vw', marginBottom: '1.5vh' }}>
-          <span className="font-black text-pink-500 bg-pink-100 border border-pink-200"
-            style={{ fontSize: '1.6vw', padding: '0.4vw 1.2vw', borderRadius: '1vw' }}>
-            {t('display.question.corner', { corner: quiz.cornerNumber })}
-          </span>
-          {quiz.cornerTitle && <span className="font-bold text-pink-400" style={{ fontSize: '1.4vw' }}>{quiz.cornerTitle}</span>}
           <span className="font-black text-rose-500 bg-rose-100 border border-rose-200"
             style={{ fontSize: '1.6vw', padding: '0.4vw 1.2vw', borderRadius: '1vw' }}>
             Q{quiz.questionNumber}
@@ -252,7 +241,6 @@ function QuestionView({ quiz, answerCount, answerTotal, qIndex, qTotal, liveCorr
   );
 }
 
-/* ── Judging View ── */
 function JudgingView({ liveCorrectPlayers }) {
   return (
     <div className="w-full h-full flex">
@@ -288,7 +276,6 @@ function JudgingView({ liveCorrectPlayers }) {
   );
 }
 
-/* ── Reveal Answer View ── */
 function RevealView({ revealData }) {
   if (!revealData) return null;
   const { correctAnswer, correctPlayers, totalAnswers, correctCount, incorrectCount, points } = revealData;
@@ -337,7 +324,6 @@ function RevealView({ revealData }) {
   );
 }
 
-/* ── Final Scores View ── */
 function ScoresView({ rankings }) {
   const sorted = [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
     .map((r, i) => ({ ...r, rank: i + 1 }));

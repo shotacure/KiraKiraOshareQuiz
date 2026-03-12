@@ -11,7 +11,8 @@ export async function handleLoadQuizzes(connectionId, body) {
   if (gameState.status !== 'init') {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '初期状態でのみクイズを読み込めます。リセットしてください。',
+      code: 'not_init_state',
+      message: 'not_init_state',
     });
     return { statusCode: 400, body: 'Can only load in init state' };
   }
@@ -20,7 +21,8 @@ export async function handleLoadQuizzes(connectionId, body) {
   if (!Array.isArray(quizzes) || quizzes.length === 0) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: 'クイズデータが空です',
+      code: 'empty_quizzes',
+      message: 'empty_quizzes',
     });
     return { statusCode: 400, body: 'No quizzes provided' };
   }
@@ -28,19 +30,20 @@ export async function handleLoadQuizzes(connectionId, body) {
   const validated = [];
   for (let i = 0; i < quizzes.length; i++) {
     const q = quizzes[i];
-    if (!q.quizId || !q.questionText || !q.questionType) {
+    if (!q.questionText || !q.questionType) {
       await sendToConnection(connectionId, {
         event: 'error',
-        message: `問題 ${i + 1} にquizId, questionText, questionTypeが必要です`,
+        code: 'invalid_quiz',
+        row: i + 1,
+        message: 'invalid_quiz',
       });
       return { statusCode: 400, body: `Invalid quiz at index ${i}` };
     }
 
+    const questionNumber = q.questionNumber || i + 1;
     validated.push({
-      quizId: q.quizId,
-      cornerNumber: q.cornerNumber || 1,
-      cornerTitle: q.cornerTitle || '',
-      questionNumber: q.questionNumber || i + 1,
+      quizId: q.quizId || `q${String(questionNumber).padStart(3, '0')}`,
+      questionNumber,
       questionText: q.questionText,
       questionType: q.questionType,
       modelAnswer: q.modelAnswer || null,
@@ -48,13 +51,12 @@ export async function handleLoadQuizzes(connectionId, body) {
       choices: q.choices || [],
       correctChoiceIndex: q.correctChoiceIndex ?? null,
       points: q.points || 10,
-      order: q.order || i + 1,
+      order: q.order || questionNumber,
     });
   }
 
   await putQuizBatch(validated);
 
-  // Transition to accepting state
   await updateGameState({
     status: 'accepting',
     questionHistory: [],
@@ -62,14 +64,12 @@ export async function handleLoadQuizzes(connectionId, body) {
 
   const allQuizzes = await getAllQuizzes();
 
-  // Notify admin
   await sendToConnection(connectionId, {
     event: 'quizzes_loaded',
     count: validated.length,
     quizzes: allQuizzes,
   });
 
-  // Broadcast state change to all
   await broadcastToAll({
     event: 'game_state_update',
     status: 'accepting',
