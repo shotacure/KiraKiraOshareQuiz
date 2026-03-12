@@ -4,6 +4,8 @@ import {
   getQuiz,
   getAnswer,
   getAllPlayers,
+  getAllQuizzes,
+  getAnswersForQuiz,
 } from '../lib/db.mjs';
 import { sendToConnection } from '../lib/broadcast.mjs';
 
@@ -14,11 +16,14 @@ export async function handleGetState(connectionId) {
   }
 
   const gameState = await getGameState();
+  const allQuizzes = await getAllQuizzes();
 
   const payload = {
     event: 'state_sync',
     status: gameState.status,
     currentQuizId: gameState.currentQuizId,
+    questionHistory: gameState.questionHistory || [],
+    totalQuizCount: allQuizzes.length,
   };
 
   // If there's an active question, include question info
@@ -36,16 +41,31 @@ export async function handleGetState(connectionId) {
         choices: quiz.questionType === 'choice' ? quiz.choices : undefined,
       };
 
-      // If answer is revealed, include correct answer
       if (gameState.revealedAnswer) {
         payload.question.correctAnswer =
           quiz.questionType === 'choice'
             ? quiz.choices[quiz.correctChoiceIndex]
             : quiz.modelAnswer;
       }
+
+      // For admin, include answers
+      if (conn.role === 'admin') {
+        const answers = await getAnswersForQuiz(gameState.currentQuizId);
+        payload.answers = answers.map((a) => ({
+          playerId: a.playerId,
+          playerName: a.playerName,
+          answerText: a.answerText,
+          choiceIndex: a.choiceIndex,
+          answeredAt: a.answeredAt,
+          isCorrect: a.isCorrect,
+          elapsedMs: gameState.questionStartedAt
+            ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
+            : null,
+        }));
+      }
     }
 
-    // If player, include their answer status
+    // For player, include their answer
     if (conn.role === 'player' && conn.playerId) {
       const answer = await getAnswer(gameState.currentQuizId, conn.playerId);
       if (answer) {
@@ -59,11 +79,24 @@ export async function handleGetState(connectionId) {
     }
   }
 
+  // Include player count for display
+  if (conn.role === 'display' || conn.role === 'admin') {
+    const players = await getAllPlayers();
+    payload.players = players.map((p, i) => ({
+      rank: i + 1,
+      playerId: p.playerId,
+      name: p.name,
+      totalScore: p.totalScore,
+      correctCount: p.correctCount,
+    }));
+  }
+
   // If showing scores, include rankings
   if (gameState.status === 'showing_scores') {
     const players = await getAllPlayers();
     payload.rankings = players.map((p, i) => ({
       rank: i + 1,
+      playerId: p.playerId,
       name: p.name,
       totalScore: p.totalScore,
     }));

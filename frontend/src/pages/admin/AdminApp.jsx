@@ -1,42 +1,41 @@
 import { useState, useEffect, useRef } from 'react';
 import { useGame, useMessageHandler } from '../../contexts/GameContext';
 import { useWebSocket } from '../../hooks/useWebSocket';
+import { ADMIN_SECRET_KEY } from '../../config';
 import { ConnectionBadge, Button, Card, SectionTitle, formatElapsedMs } from '../../components/UI';
+import { t } from '../../i18n';
 
 export default function AdminApp() {
   const { state, dispatch } = useGame();
   const handleMessage = useMessageHandler();
   const { send, connected } = useWebSocket(handleMessage);
-  const [secret, setSecret] = useState('');
+  const [secret, setSecret] = useState(() => sessionStorage.getItem(ADMIN_SECRET_KEY) || '');
   const [submitting, setSubmitting] = useState(false);
-  const authedSecretRef = useRef(null); // remember password for re-auth on reconnect
+  const authedSecretRef = useRef(sessionStorage.getItem(ADMIN_SECRET_KEY) || null);
 
-  useEffect(() => {
-    dispatch({ type: 'SET_CONNECTED', payload: connected });
-  }, [connected, dispatch]);
+  useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
 
-  // Reset submitting when we get auth result
-  useEffect(() => {
-    if (state.authed) {
-      setSubmitting(false);
-      authedSecretRef.current = secret; // store for reconnect
-    }
-    if (state.authError) {
-      setSubmitting(false);
-    }
-  }, [state.authed, state.authError]);
-
-  // Re-authenticate on WebSocket reconnect
+  // On connect (F5 recovery or WS reconnect): re-authenticate if we have a saved secret
   useEffect(() => {
     if (connected && authedSecretRef.current) {
       send({ action: 'connect_role', role: 'admin', secret: authedSecretRef.current });
+      if (!state.authed) dispatch({ type: 'SET_ROLE', payload: 'admin' });
     }
-  }, [connected, send]);
+  }, [connected]);
+
+  // Persist secret on successful auth, reset on failure
+  useEffect(() => {
+    if (state.authed) {
+      setSubmitting(false);
+      authedSecretRef.current = secret || authedSecretRef.current;
+      if (authedSecretRef.current) sessionStorage.setItem(ADMIN_SECRET_KEY, authedSecretRef.current);
+    }
+    if (state.authError) setSubmitting(false);
+  }, [state.authed, state.authError]);
 
   const handleLogin = () => {
     if (!secret.trim() || submitting) return;
-    dispatch({ type: 'CLEAR_ERROR' });
-    setSubmitting(true);
+    dispatch({ type: 'CLEAR_ERROR' }); setSubmitting(true);
     send({ action: 'connect_role', role: 'admin', secret: secret.trim() });
     dispatch({ type: 'SET_ROLE', payload: 'admin' });
   };
@@ -46,25 +45,15 @@ export default function AdminApp() {
       <div className="min-h-screen bg-quiz-bg flex items-center justify-center">
         <ConnectionBadge connected={connected} />
         <Card className="w-full max-w-md mx-4">
-          <h1 className="font-display font-black text-2xl text-quiz-text mb-6 text-center">🔐 管理者ログイン</h1>
-
-          {state.authError && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-quiz-accent/15 border border-quiz-accent/30 text-quiz-accent text-sm font-body">
-              {state.authError}
-            </div>
-          )}
-
-          <input
-            type="password"
-            value={secret}
+          <h1 className="font-display font-black text-2xl text-quiz-text mb-6 text-center">{t('admin.login.title')}</h1>
+          {state.authError && <div className="mb-4 px-4 py-3 rounded-xl bg-quiz-accent/15 border border-quiz-accent/30 text-quiz-accent text-sm">{state.authError}</div>}
+          <input type="password" value={secret}
             onChange={(e) => { setSecret(e.target.value); dispatch({ type: 'CLEAR_ERROR' }); }}
             onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-            placeholder="管理者パスワード"
-            className="w-full bg-quiz-surface border border-white/10 rounded-xl px-4 py-3 text-quiz-text font-body placeholder:text-quiz-muted/50 focus:outline-none focus:border-quiz-teal/50 transition-colors"
-            autoFocus
-          />
+            placeholder={t('admin.login.placeholder')}
+            className="w-full bg-quiz-surface border border-white/10 rounded-xl px-4 py-3 text-quiz-text font-body placeholder:text-quiz-muted/50 focus:outline-none focus:border-quiz-teal/50" autoFocus />
           <Button onClick={handleLogin} disabled={!connected || !secret.trim() || submitting} variant="accent" size="lg" className="w-full mt-4">
-            {submitting ? '認証中...' : 'ログイン'}
+            {submitting ? t('admin.login.submitting') : t('admin.login.submit')}
           </Button>
         </Card>
       </div>
@@ -74,178 +63,123 @@ export default function AdminApp() {
   return (
     <div className="min-h-screen bg-quiz-bg p-4">
       <ConnectionBadge connected={connected} />
-
-      {/* Top status bar */}
       <div className="flex items-center justify-between mb-4">
-        <h1 className="font-display font-black text-xl text-quiz-text">🎛️ 管理画面</h1>
+        <h1 className="font-display font-black text-xl text-quiz-text">{t('admin.dashboard.title')}</h1>
         <div className="flex items-center gap-3">
           <StatusBadge status={state.status} />
-          <span className="text-quiz-muted text-sm">参加者: {state.players.length}名</span>
+          <span className="text-quiz-muted text-sm">{t('admin.dashboard.players', { count: state.players.length })}</span>
+          <span className="text-quiz-muted text-sm">{t('admin.dashboard.progress', { done: state.questionHistory.length, total: state.totalQuizCount })}</span>
         </div>
       </div>
-
       <div className="grid grid-cols-12 gap-4">
-        {/* Left column: Controls */}
         <div className="col-span-12 lg:col-span-3 space-y-4">
           <ControlPanel state={state} send={send} />
-          <QuizLoader send={send} />
         </div>
-
-        {/* Center column: Answers */}
         <div className="col-span-12 lg:col-span-5 space-y-4">
-          <CurrentQuestion quiz={state.currentQuiz} />
+          <CurrentQuestion quiz={state.currentQuiz} state={state} />
           <AnswerList state={state} send={send} />
         </div>
-
-        {/* Right column: Scores + History */}
         <div className="col-span-12 lg:col-span-4 space-y-4">
           <ScoreBoard players={state.players} rankings={state.rankings} />
-          <QuestionHistory quizzes={state.quizzes} history={state.quizzes.filter(q =>
-            state.rankings.length > 0 || state.status !== 'waiting'
-          )} />
+          <QuizList quizzes={state.quizzes} history={state.questionHistory} />
         </div>
       </div>
     </div>
   );
 }
 
-/* ── Status badge ── */
 function StatusBadge({ status }) {
-  const map = {
-    waiting: { label: '待機中', color: 'bg-quiz-muted' },
-    answering: { label: '回答受付中', color: 'bg-quiz-green animate-pulse' },
-    judging: { label: '判定中', color: 'bg-quiz-gold animate-pulse' },
-    showing_answer: { label: '正解表示中', color: 'bg-quiz-teal' },
-    showing_scores: { label: '成績表示中', color: 'bg-quiz-purple' },
+  const key = `admin.status.${status}`;
+  const colors = {
+    init: 'bg-quiz-muted', accepting: 'bg-quiz-teal animate-pulse', answering: 'bg-quiz-green animate-pulse',
+    judging: 'bg-quiz-gold animate-pulse', showing_answer: 'bg-quiz-accent', showing_scores: 'bg-quiz-purple',
   };
-  const s = map[status] || map.waiting;
   return (
     <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-quiz-surface text-sm font-bold">
-      <span className={`w-2 h-2 rounded-full ${s.color}`} />
-      {s.label}
+      <span className={`w-2 h-2 rounded-full ${colors[status] || 'bg-quiz-muted'}`} />{t(key)}
     </span>
   );
 }
 
-/* ── Control Panel ── */
 function ControlPanel({ state, send }) {
-  const [selectedQuizId, setSelectedQuizId] = useState('');
-  const { status, quizzes } = state;
+  const { status, quizzes, questionHistory, totalQuizCount } = state;
+  const fileRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const nextQuiz = quizzes.find(q => !questionHistory.includes(q.quizId));
+  const allAsked = questionHistory.length >= totalQuizCount && totalQuizCount > 0;
 
-  // Auto-select next un-asked quiz
-  useEffect(() => {
-    if (!selectedQuizId && quizzes.length > 0) {
-      setSelectedQuizId(quizzes[0].quizId);
-    }
-  }, [quizzes]);
+  const handleLoadFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLoading(true);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const q = data.quizzes || data;
+      send({ action: 'load_quizzes', quizzes: Array.isArray(q) ? q : [q] });
+    } catch (err) { alert('JSON error: ' + err.message); }
+    setLoading(false);
+    if (fileRef.current) fileRef.current.value = '';
+  };
 
-  const handleStartQuestion = () => {
-    if (!selectedQuizId) return;
-    send({ action: 'start_question', quizId: selectedQuizId });
+  const handleResetAll = () => {
+    if (window.confirm(t('admin.control.resetConfirm'))) send({ action: 'reset_all' });
   };
 
   return (
     <Card>
-      <SectionTitle>進行コントロール</SectionTitle>
-
-      {/* Quiz selector */}
-      <div className="mb-3">
-        <label className="text-quiz-muted text-xs block mb-1">出題する問題</label>
-        <select
-          value={selectedQuizId}
-          onChange={(e) => setSelectedQuizId(e.target.value)}
-          className="w-full bg-quiz-surface border border-white/10 rounded-lg px-3 py-2 text-sm text-quiz-text focus:outline-none focus:border-quiz-teal/50"
-        >
-          <option value="">-- 選択してください --</option>
-          {quizzes.map((q) => (
-            <option key={q.quizId} value={q.quizId}>
-              C{q.cornerNumber}-Q{q.questionNumber}: {q.questionText?.substring(0, 30)}...
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Action buttons */}
+      <SectionTitle>{t('admin.control.title')}</SectionTitle>
       <div className="space-y-2">
-        <Button
-          onClick={handleStartQuestion}
-          disabled={status !== 'waiting' && status !== 'showing_answer' && status !== 'showing_scores'}
-          variant="teal"
-          size="sm"
-          className="w-full"
-        >
-          ▶ 出題する
-        </Button>
-
-        <Button
-          onClick={() => send({ action: 'close_answers' })}
-          disabled={status !== 'answering'}
-          variant="gold"
-          size="sm"
-          className="w-full"
-        >
-          ⏹ 回答締切
-        </Button>
-
-        <Button
-          onClick={() => send({ action: 'reveal_answer' })}
-          disabled={status !== 'judging' && status !== 'answering'}
-          variant="accent"
-          size="sm"
-          className="w-full"
-        >
-          💡 正解発表
-        </Button>
-
-        <Button
-          onClick={() => send({ action: 'show_scores' })}
-          disabled={status === 'waiting'}
-          variant="purple"
-          size="sm"
-          className="w-full"
-        >
-          🏆 成績発表
-        </Button>
-
-        <hr className="border-white/5 my-2" />
-
-        <Button
-          onClick={() => send({ action: 'reset_to_waiting' })}
-          variant="ghost"
-          size="sm"
-          className="w-full"
-        >
-          ↩ 待機に戻す
-        </Button>
+        {status === 'init' && (
+          <>
+            <input ref={fileRef} type="file" accept=".json" onChange={handleLoadFile} className="hidden" />
+            <Button onClick={() => fileRef.current?.click()} disabled={loading} variant="teal" size="sm" className="w-full">
+              {loading ? t('admin.control.loading') : t('admin.control.loadQuiz')}
+            </Button>
+          </>
+        )}
+        {(status === 'accepting' || status === 'showing_answer') && nextQuiz && (
+          <div>
+            <p className="text-quiz-muted text-xs mb-1">{t('admin.control.nextQuestion')} C{nextQuiz.cornerNumber}-Q{nextQuiz.questionNumber}</p>
+            <p className="text-quiz-text text-sm mb-2 truncate">{nextQuiz.questionText}</p>
+            <Button onClick={() => send({ action: 'start_question', quizId: nextQuiz.quizId })} variant="teal" size="sm" className="w-full">
+              {t('admin.control.startQuestion')}
+            </Button>
+          </div>
+        )}
+        {status === 'showing_answer' && allAsked && (
+          <Button onClick={() => send({ action: 'show_scores' })} variant="purple" size="sm" className="w-full">{t('admin.control.showScores')}</Button>
+        )}
+        {status === 'answering' && (
+          <Button onClick={() => send({ action: 'close_answers' })} variant="gold" size="sm" className="w-full">{t('admin.control.closeAnswers')}</Button>
+        )}
+        {status === 'judging' && (
+          <Button onClick={() => send({ action: 'reveal_answer' })} variant="accent" size="sm" className="w-full">{t('admin.control.revealAnswer')}</Button>
+        )}
+        <hr className="border-white/5 my-3" />
+        <Button onClick={handleResetAll} variant="danger" size="sm" className="w-full">{t('admin.control.resetAll')}</Button>
       </div>
     </Card>
   );
 }
 
-/* ── Current Question Display ── */
-function CurrentQuestion({ quiz }) {
+function CurrentQuestion({ quiz, state }) {
   if (!quiz) {
-    return (
-      <Card className="text-center py-8">
-        <p className="text-quiz-muted">問題が出題されていません</p>
-      </Card>
-    );
+    const msg = state.status === 'init' ? t('admin.question.empty.init')
+      : state.status === 'accepting' ? t('admin.question.empty.accepting')
+      : t('admin.question.empty.default');
+    return <Card className="text-center py-8"><p className="text-quiz-muted">{msg}</p></Card>;
   }
   return (
     <Card>
       <div className="flex items-center gap-2 mb-2">
-        <span className="px-2 py-0.5 rounded bg-quiz-accent/20 text-quiz-accent text-xs font-bold">
-          C{quiz.cornerNumber}-Q{quiz.questionNumber}
-        </span>
+        <span className="px-2 py-0.5 rounded bg-quiz-accent/20 text-quiz-accent text-xs font-bold">C{quiz.cornerNumber}-Q{quiz.questionNumber}</span>
         <span className="text-quiz-muted text-xs">{quiz.cornerTitle}</span>
         <span className="ml-auto text-quiz-gold text-sm font-bold">+{quiz.points}pt</span>
       </div>
       <p className="font-body text-quiz-text text-base leading-relaxed">{quiz.questionText}</p>
       {quiz.modelAnswer && (
-        <p className="mt-2 text-sm">
-          <span className="text-quiz-muted">模範解答: </span>
-          <span className="text-quiz-green font-bold">{quiz.modelAnswer}</span>
-        </p>
+        <p className="mt-2 text-sm"><span className="text-quiz-muted">{t('admin.question.modelAnswer')} </span><span className="text-quiz-green font-bold">{quiz.modelAnswer}</span></p>
       )}
       {quiz.choices && (
         <div className="mt-2 space-y-1">
@@ -260,191 +194,86 @@ function CurrentQuestion({ quiz }) {
   );
 }
 
-/* ── Answer List with Judging ── */
 function AnswerList({ state, send }) {
   const { answers, currentQuiz } = state;
-
   if (!currentQuiz) return null;
 
   const handleJudge = (playerId, isCorrect) => {
-    send({
-      action: 'judge',
-      quizId: currentQuiz.quizId,
-      playerId,
-      isCorrect,
-    });
+    send({ action: 'judge', quizId: currentQuiz.quizId, playerId, isCorrect });
   };
 
-  const handleBulkJudge = (isCorrect) => {
-    const unjudged = answers.filter((a) => a.isCorrect == null);
-    if (unjudged.length === 0) return;
-    send({
-      action: 'judge_bulk',
-      quizId: currentQuiz.quizId,
-      judgments: unjudged.map((a) => ({ playerId: a.playerId, isCorrect })),
-    });
-  };
+  // Sort by answer time (earliest first) to ensure rank = answer speed
+  const sorted = [...answers].sort((a, b) => {
+    const tA = a.elapsedMs ?? Infinity;
+    const tB = b.elapsedMs ?? Infinity;
+    return tA - tB;
+  });
 
-  const handleAutoJudge = () => {
-    // Auto-judge based on acceptable answers / choice index
-    const judgments = answers
-      .filter((a) => a.isCorrect == null)
-      .map((a) => {
-        let correct = false;
-        if (currentQuiz.questionType === 'choice') {
-          correct = a.choiceIndex === currentQuiz.correctChoiceIndex;
-        } else if (currentQuiz.acceptableAnswers?.length > 0) {
-          const normalized = a.answerText?.trim().toLowerCase();
-          correct = currentQuiz.acceptableAnswers.some(
-            (acc) => acc.toLowerCase() === normalized
-          );
-        } else if (currentQuiz.modelAnswer) {
-          correct = a.answerText?.trim().toLowerCase() === currentQuiz.modelAnswer.toLowerCase();
-        }
-        return { playerId: a.playerId, isCorrect: correct };
-      });
-
-    if (judgments.length > 0) {
-      send({
-        action: 'judge_bulk',
-        quizId: currentQuiz.quizId,
-        judgments,
-      });
-    }
-  };
+  // Find the first unjudged answer — only this row's buttons are active
+  const firstUnjudgedIdx = sorted.findIndex(a => a.isCorrect == null);
 
   return (
     <Card>
-      <div className="flex items-center justify-between mb-3">
-        <SectionTitle className="!mb-0">回答一覧 ({answers.length}件)</SectionTitle>
-        <div className="flex gap-1">
-          <Button onClick={handleAutoJudge} variant="teal" size="sm">自動判定</Button>
-          <Button onClick={() => handleBulkJudge(true)} variant="green" size="sm">全員○</Button>
-          <Button onClick={() => handleBulkJudge(false)} variant="danger" size="sm">全員×</Button>
-        </div>
-      </div>
-
+      <SectionTitle className="!mb-3">{t('admin.answers.title', { count: answers.length })}</SectionTitle>
       <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">
-        {answers.length === 0 ? (
-          <p className="text-quiz-muted text-sm text-center py-4">まだ回答がありません</p>
-        ) : (
-          answers.map((a, i) => (
-            <div
-              key={a.playerId}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
-                a.isCorrect === true
-                  ? 'bg-quiz-green/10 border border-quiz-green/20'
-                  : a.isCorrect === false
-                  ? 'bg-quiz-accent/10 border border-quiz-accent/20'
-                  : 'bg-quiz-surface/50'
-              }`}
-            >
+        {sorted.length === 0 ? (
+          <p className="text-quiz-muted text-sm text-center py-4">{t('admin.answers.empty')}</p>
+        ) : sorted.map((a, i) => {
+          const isActive = i === firstUnjudgedIdx;
+          return (
+            <div key={a.playerId} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
+              a.isCorrect === true ? 'bg-quiz-green/10 border border-quiz-green/20' :
+              a.isCorrect === false ? 'bg-quiz-accent/10 border border-quiz-accent/20' :
+              isActive ? 'bg-quiz-surface/80 border border-quiz-teal/30' : 'bg-quiz-surface/50'
+            }`}>
               <span className="text-quiz-muted font-mono w-6 text-center text-xs">{i + 1}</span>
               <span className="font-bold text-quiz-text truncate w-20">{a.playerName}</span>
               <span className="flex-1 font-body text-quiz-text truncate">{a.answerText}</span>
               <span className="text-quiz-muted text-xs font-mono whitespace-nowrap">
                 {a.elapsedMs != null ? formatElapsedMs(a.elapsedMs) : ''}
               </span>
-              <div className="flex gap-1 ml-2 shrink-0">
-                <button
-                  onClick={() => handleJudge(a.playerId, true)}
+              {a.isCorrect === true && a.pointsAwarded != null && (
+                <span className="text-quiz-gold text-xs font-bold whitespace-nowrap">+{a.pointsAwarded}</span>
+              )}
+              <div className="flex gap-1 ml-1 shrink-0">
+                <button onClick={() => handleJudge(a.playerId, true)}
+                  disabled={!isActive && a.isCorrect == null}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
-                    a.isCorrect === true
-                      ? 'bg-quiz-green text-white'
-                      : 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green'
-                  }`}
-                >
-                  ○
-                </button>
-                <button
-                  onClick={() => handleJudge(a.playerId, false)}
+                    a.isCorrect === true ? 'bg-quiz-green text-white' :
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
+                  }`}>○</button>
+                <button onClick={() => handleJudge(a.playerId, false)}
+                  disabled={!isActive && a.isCorrect == null}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
-                    a.isCorrect === false
-                      ? 'bg-quiz-accent text-white'
-                      : 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent'
-                  }`}
-                >
-                  ×
-                </button>
+                    a.isCorrect === false ? 'bg-quiz-accent text-white' :
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
+                  }`}>×</button>
               </div>
             </div>
-          ))
-        )}
+          );
+        })}
       </div>
     </Card>
   );
 }
 
-/* ── Quiz Data Loader ── */
-function QuizLoader({ send }) {
-  const fileRef = useRef(null);
-  const [loading, setLoading] = useState(false);
-
-  const handleFile = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setLoading(true);
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      const quizzes = data.quizzes || data;
-      send({ action: 'load_quizzes', quizzes: Array.isArray(quizzes) ? quizzes : [quizzes] });
-    } catch (err) {
-      alert('JSONの読み込みに失敗しました: ' + err.message);
-    }
-    setLoading(false);
-    if (fileRef.current) fileRef.current.value = '';
-  };
-
-  return (
-    <Card>
-      <SectionTitle>クイズデータ読込</SectionTitle>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".json"
-        onChange={handleFile}
-        className="hidden"
-      />
-      <Button
-        onClick={() => fileRef.current?.click()}
-        disabled={loading}
-        variant="ghost"
-        size="sm"
-        className="w-full"
-      >
-        {loading ? '読み込み中...' : '📁 JSONファイルを選択'}
-      </Button>
-    </Card>
-  );
-}
-
-/* ── Score Board ── */
 function ScoreBoard({ players, rankings }) {
-  // Use rankings if available (sorted), otherwise fall back to players sorted by score
-  const list = rankings.length > 0
-    ? rankings
-    : [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((p, i) => ({
-        rank: i + 1,
-        name: p.name,
-        playerId: p.playerId,
-        totalScore: p.totalScore || 0,
-        correctCount: p.correctCount || 0,
-      }));
-
+  const list = rankings.length > 0 ? [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((r, i) => ({ ...r, rank: i + 1 })) :
+    [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((p, i) => ({
+      rank: i + 1, name: p.name, playerId: p.playerId, totalScore: p.totalScore || 0, correctCount: p.correctCount || 0,
+    }));
   return (
     <Card className="max-h-[40vh] overflow-y-auto">
-      <SectionTitle>成績一覧</SectionTitle>
-      {list.length === 0 ? (
-        <p className="text-quiz-muted text-sm text-center">参加者がいません</p>
-      ) : (
+      <SectionTitle>{t('admin.scores.title')}</SectionTitle>
+      {list.length === 0 ? <p className="text-quiz-muted text-sm text-center">{t('admin.scores.empty')}</p> : (
         <div className="space-y-1">
           {list.map((p, i) => (
             <div key={p.playerId || i} className="flex items-center gap-2 text-sm py-1">
-              <span className="font-mono font-bold text-quiz-muted w-6 text-right">{p.rank || i + 1}.</span>
+              <span className="font-mono font-bold text-quiz-muted w-6 text-right">{p.rank}.</span>
               <span className="flex-1 truncate font-bold text-quiz-text">{p.name}</span>
               <span className="font-mono text-quiz-gold font-bold">{p.totalScore}pt</span>
-              <span className="text-quiz-muted text-xs">({p.correctCount || 0}問)</span>
             </div>
           ))}
         </div>
@@ -453,22 +282,22 @@ function ScoreBoard({ players, rankings }) {
   );
 }
 
-/* ── Question History ── */
-function QuestionHistory({ quizzes }) {
+function QuizList({ quizzes, history }) {
   if (!quizzes || quizzes.length === 0) return null;
   return (
     <Card className="max-h-[30vh] overflow-y-auto">
-      <SectionTitle>クイズ一覧</SectionTitle>
+      <SectionTitle>{t('admin.quizList.title')}</SectionTitle>
       <div className="space-y-1">
-        {quizzes.map((q) => (
-          <div key={q.quizId} className="text-sm py-1 border-b border-white/5 last:border-0">
-            <span className="text-quiz-muted font-mono text-xs">C{q.cornerNumber}-Q{q.questionNumber}</span>
-            <span className="text-quiz-text ml-2">{q.questionText?.substring(0, 40)}...</span>
-            {q.modelAnswer && (
-              <span className="text-quiz-green text-xs ml-2">→ {q.modelAnswer}</span>
-            )}
-          </div>
-        ))}
+        {quizzes.map(q => {
+          const asked = history.includes(q.quizId);
+          return (
+            <div key={q.quizId} className={`text-sm py-1 border-b border-white/5 last:border-0 ${asked ? 'opacity-40' : ''}`}>
+              <span className="font-mono text-xs text-quiz-muted">C{q.cornerNumber}-Q{q.questionNumber}</span>
+              <span className="ml-2 text-quiz-text">{q.questionText?.substring(0, 35)}...</span>
+              {asked && <span className="text-quiz-green text-xs ml-1">✓</span>}
+            </div>
+          );
+        })}
       </div>
     </Card>
   );

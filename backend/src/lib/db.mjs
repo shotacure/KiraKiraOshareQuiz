@@ -46,6 +46,13 @@ export async function updateItem(pk, sk, updateExpr, exprAttrValues, exprAttrNam
   return res.Attributes;
 }
 
+export async function deleteItem(pk, sk) {
+  await docClient.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { PK: pk, SK: sk },
+  }));
+}
+
 export async function queryItems(pk, skPrefix) {
   const params = {
     TableName: TABLE,
@@ -73,7 +80,7 @@ export async function queryGSI1(gsi1pk, gsi1skPrefix) {
 // Connection management
 // ============================================================
 export async function putConnection(connectionId, data) {
-  const ttl = Math.floor(Date.now() / 1000) + 24 * 60 * 60; // 24h TTL
+  const ttl = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
   await docClient.send(new PutCommand({
     TableName: CONN_TABLE,
     Item: { connectionId, ttl, ...data },
@@ -117,11 +124,10 @@ export async function getAllConnections() {
 export async function getGameState() {
   const state = await getItem('GAME', 'STATE');
   if (!state) {
-    // Initialize default game state
     const defaultState = {
       PK: 'GAME',
       SK: 'STATE',
-      status: 'waiting',
+      status: 'init',
       currentQuizId: null,
       questionStartedAt: null,
       questionHistory: [],
@@ -157,7 +163,6 @@ export async function getQuiz(quizId) {
 }
 
 export async function putQuizBatch(quizzes) {
-  // Batch write in chunks of 25
   for (let i = 0; i < quizzes.length; i += 25) {
     const batch = quizzes.slice(i, i + 25);
     await docClient.send(new BatchWriteCommand({
@@ -172,6 +177,20 @@ export async function putQuizBatch(quizzes) {
               ...q,
             },
           },
+        })),
+      },
+    }));
+  }
+}
+
+export async function deleteAllQuizzes() {
+  const quizzes = await getAllQuizzes();
+  for (let i = 0; i < quizzes.length; i += 25) {
+    const batch = quizzes.slice(i, i + 25);
+    await docClient.send(new BatchWriteCommand({
+      RequestItems: {
+        [TABLE]: batch.map((q) => ({
+          DeleteRequest: { Key: { PK: q.PK, SK: q.SK } },
         })),
       },
     }));
@@ -197,6 +216,25 @@ export async function putPlayer(player) {
 
 export async function getAllPlayers() {
   return await queryGSI1('PLAYERS', 'SCORE#');
+}
+
+export async function getPlayerByName(name) {
+  const players = await getAllPlayers();
+  return players.find((p) => p.name === name) || null;
+}
+
+export async function deleteAllPlayers() {
+  const players = await getAllPlayers();
+  for (let i = 0; i < players.length; i += 25) {
+    const batch = players.slice(i, i + 25);
+    await docClient.send(new BatchWriteCommand({
+      RequestItems: {
+        [TABLE]: batch.map((p) => ({
+          DeleteRequest: { Key: { PK: p.PK, SK: p.SK } },
+        })),
+      },
+    }));
+  }
 }
 
 export async function updatePlayerScore(playerId, pointsToAdd) {
@@ -236,4 +274,18 @@ export async function updateAnswerJudgment(quizId, playerId, isCorrect, pointsAw
     'SET isCorrect = :correct, pointsAwarded = :pts',
     { ':correct': isCorrect, ':pts': pointsAwarded }
   );
+}
+
+export async function deleteAllAnswersForQuiz(quizId) {
+  const answers = await queryItems(`QUIZ#${quizId}`, 'ANSWER#');
+  for (let i = 0; i < answers.length; i += 25) {
+    const batch = answers.slice(i, i + 25);
+    await docClient.send(new BatchWriteCommand({
+      RequestItems: {
+        [TABLE]: batch.map((a) => ({
+          DeleteRequest: { Key: { PK: a.PK, SK: a.SK } },
+        })),
+      },
+    }));
+  }
 }

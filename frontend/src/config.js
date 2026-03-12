@@ -5,10 +5,20 @@ export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 // Cookie/localStorage key for player ID persistence
 export const PLAYER_ID_KEY = 'quiz_player_id';
 export const PLAYER_NAME_KEY = 'quiz_player_name';
+export const ADMIN_SECRET_KEY = 'quiz_admin_secret';
+export const DISPLAY_SECRET_KEY = 'quiz_display_secret';
 
-// Game statuses
+// Route paths (admin/display use obscure paths)
+export const ROUTES = {
+  PLAYER: '/',
+  ADMIN: '/control',
+  DISPLAY: '/screen',
+};
+
+// Game statuses matching the new flow
 export const STATUS = {
-  WAITING: 'waiting',
+  INIT: 'init',
+  ACCEPTING: 'accepting',
   ANSWERING: 'answering',
   JUDGING: 'judging',
   SHOWING_ANSWER: 'showing_answer',

@@ -1,326 +1,446 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useGame, useMessageHandler } from '../../contexts/GameContext';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { PLAYER_ID_KEY, PLAYER_NAME_KEY } from '../../config';
-import { ConnectionBadge, Button, Card, Confetti } from '../../components/UI';
+import { t } from '../../i18n';
 
+/**
+ * Recovery flow on F5 / reconnect:
+ *
+ *   phase='loading'    → WS connected, send get_state, wait for server response
+ *   phase='recovering' → server responded with accepting+, localStorage has saved ID,
+ *                         send register, wait for registered event
+ *   phase='ready'      → show appropriate screen based on state
+ *
+ * Key: we track `serverResponded` to distinguish "initial default status=init"
+ * from "server actually told us status=init". Only after server responds
+ * do we evaluate the status.
+ */
 export default function PlayerApp() {
   const { state, dispatch } = useGame();
   const handleMessage = useMessageHandler();
   const { send, connected } = useWebSocket(handleMessage);
 
-  useEffect(() => {
-    dispatch({ type: 'SET_CONNECTED', payload: connected });
-  }, [connected, dispatch]);
+  const hasSavedSession = useRef(!!localStorage.getItem(PLAYER_ID_KEY));
+  const [phase, setPhase] = useState(hasSavedSession.current ? 'loading' : 'ready');
+  const recoveryDone = useRef(false);
+  const serverResponded = useRef(false);
 
-  // Auto-reconnect: re-register to restore server-side connection mapping,
-  // then get_state to sync current game state.
+  useEffect(() => { dispatch({ type: 'SET_CONNECTED', payload: connected }); }, [connected, dispatch]);
+
+  // Phase 1: get_state on connect
   useEffect(() => {
-    if (connected && state.playerId && state.playerName) {
-      send({
-        action: 'register',
-        name: state.playerName,
-        playerId: state.playerId,
-      });
-      // Small delay to ensure register completes before state sync
-      const timer = setTimeout(() => {
-        send({ action: 'get_state' });
-      }, 300);
+    if (!connected) return;
+    serverResponded.current = false;
+    send({ action: 'get_state' });
+  }, [connected]);
+
+  // Detect server response: any state_sync, registered, or full_reset sets the real status
+  // We watch for status changes that differ from the initial default
+  const statusChangeCount = useRef(0);
+  useEffect(() => {
+    statusChangeCount.current += 1;
+    // First render has status='init' from initialState — ignore it
+    if (statusChangeCount.current <= 1) return;
+    serverResponded.current = true;
+  }, [state.status]);
+
+  // Also mark responded on registrationRejected (server explicitly replied)
+  useEffect(() => {
+    if (state.registrationRejected) serverResponded.current = true;
+  }, [state.registrationRejected]);
+
+  // Also mark responded on playerId change (registered event arrived)
+  useEffect(() => {
+    if (state.playerId) serverResponded.current = true;
+  }, [state.playerId]);
+
+  // Phase 2: once server responded, decide whether to recover
+  useEffect(() => {
+    if (phase !== 'loading') return;
+    if (!serverResponded.current) return; // Still waiting for server
+
+    if (state.status === 'init') {
+      // Game truly in init — no recovery, show preparing screen
+      setPhase('ready');
+      return;
+    }
+
+    // Status is accepting or later — try to recover
+    if (connected && !recoveryDone.current) {
+      const savedId = localStorage.getItem(PLAYER_ID_KEY);
+      const savedName = localStorage.getItem(PLAYER_NAME_KEY);
+      if (savedId && savedName) {
+        recoveryDone.current = true;
+        setPhase('recovering');
+        send({ action: 'register', name: savedName, playerId: savedId });
+      } else {
+        setPhase('ready');
+      }
+    }
+  }, [state.status, connected, phase]);
+
+  // Phase 3: registration succeeded
+  useEffect(() => {
+    if (state.playerId) {
+      localStorage.setItem(PLAYER_ID_KEY, state.playerId);
+      if (state.playerName) localStorage.setItem(PLAYER_NAME_KEY, state.playerName);
+      if (phase !== 'ready') setPhase('ready');
+    }
+  }, [state.playerId]);
+
+  // Registration rejected
+  useEffect(() => {
+    if (state.registrationRejected) {
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.removeItem(PLAYER_NAME_KEY);
+      recoveryDone.current = false;
+      setPhase('ready');
+    }
+  }, [state.registrationRejected]);
+
+  // Timeout: if loading/recovering takes too long, give up
+  useEffect(() => {
+    if (phase === 'loading' || phase === 'recovering') {
+      const timer = setTimeout(() => setPhase('ready'), 5000);
       return () => clearTimeout(timer);
+    }
+  }, [phase]);
+
+  // Full reset broadcast — clear everything
+  const prevStatus = useRef(state.status);
+  useEffect(() => {
+    if (state.status === 'init' && !state.playerId && prevStatus.current !== 'init' && serverResponded.current) {
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.removeItem(PLAYER_NAME_KEY);
+      recoveryDone.current = false;
+      setPhase('ready');
+    }
+    prevStatus.current = state.status;
+  }, [state.status, state.playerId]);
+
+  // WS reconnect (connection drop, not F5): re-register if already ready
+  useEffect(() => {
+    if (connected && state.playerId && state.playerName && phase === 'ready') {
+      send({ action: 'register', name: state.playerName, playerId: state.playerId });
+      setTimeout(() => send({ action: 'get_state' }), 300);
     }
   }, [connected]);
 
-  if (!state.playerId) {
-    return <LoginScreen send={send} connected={connected} />;
+  // ── Render ──
+
+  if (phase === 'loading' || phase === 'recovering') {
+    return (
+      <Shell>
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <div className="text-5xl animate-pulse mb-4">✨</div>
+          <p className="text-pink-400 font-bold text-lg">{t('app.recovering')}</p>
+        </div>
+      </Shell>
+    );
   }
 
-  return (
-    <div className="min-h-dvh bg-quiz-bg flex flex-col">
-      <ConnectionBadge connected={connected} />
-      <PlayerHeader name={state.playerName} score={state.totalScore} />
+  if (state.status === 'init' && !state.playerId) {
+    return (
+      <Shell>
+        <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
+          <p className="text-5xl mb-3">🎀✨</p>
+          <h1 className="font-black text-3xl text-pink-500 mb-4" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>
+            {t('app.title')}
+          </h1>
+          <div className="text-6xl mb-4 animate-pulse">⏳</div>
+          <p className="font-bold text-xl text-pink-500">{t('player.waiting.init')}</p>
+          <p className="text-pink-300 text-sm mt-2">{t('player.waiting.hint')}</p>
+        </div>
+      </Shell>
+    );
+  }
 
-      {state.status === 'waiting' && <WaitingScreen />}
-      {state.status === 'answering' && !state.myAnswer && (
-        <AnswerScreen quiz={state.currentQuiz} send={send} />
+  if (!state.playerId) return <LoginScreen send={send} connected={connected} />;
+
+  const { status } = state;
+  const playerCount = state.players?.length || 0;
+  const myRank = state.players
+    ? [...state.players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
+        .findIndex(p => p.playerId === state.playerId) + 1
+    : 0;
+
+  return (
+    <Shell>
+      <ConnDot connected={connected} />
+      <PlayerHeader name={state.playerName} score={state.totalScore} rank={myRank} total={playerCount} />
+      {(status === 'init' || status === 'accepting' || status === 'waiting') && <WaitingScreen status={status} />}
+      {status === 'answering' && !state.myAnswer && <AnswerScreen quiz={state.currentQuiz} send={send} />}
+      {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} />}
+      {status === 'judging' && <JudgingScreen answer={state.myAnswer} />}
+      {status === 'showing_answer' && (
+        <ResultScreen myAnswer={state.myAnswer} judgment={state.myJudgment} revealData={state.revealData} score={state.totalScore} />
       )}
-      {state.status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} />}
-      {state.status === 'judging' && <JudgingScreen answer={state.myAnswer} />}
-      {(state.status === 'showing_answer') && (
-        <ResultScreen judgment={state.myJudgment} revealData={state.revealData} score={state.totalScore} />
-      )}
-      {state.status === 'showing_scores' && <ScoresScreen rankings={state.rankings} playerId={state.playerId} />}
+      {status === 'showing_scores' && <ScoresScreen rankings={state.rankings} playerId={state.playerId} />}
+    </Shell>
+  );
+}
+
+/* ── Shell ── */
+function Shell({ children }) {
+  return (
+    <div className="min-h-dvh flex flex-col relative overflow-hidden" style={{
+      fontFamily: "'Zen Maru Gothic', 'Quicksand', sans-serif",
+      background: 'linear-gradient(135deg, #fff0f5 0%, #ffe4ec 50%, #fce4ff 100%)',
+    }}>
+      {Array.from({ length: 12 }, (_, i) => (
+        <div key={i} className="absolute animate-pulse pointer-events-none" style={{
+          left: `${Math.random() * 100}%`, top: `${Math.random() * 100}%`,
+          animationDelay: `${Math.random() * 4}s`, animationDuration: `${2 + Math.random() * 3}s`,
+          fontSize: 8 + Math.random() * 12, opacity: 0.2, color: '#ff6b9d',
+        }}>✦</div>
+      ))}
+      {children}
     </div>
   );
 }
 
-/* ── Login ── */
+function ConnDot({ connected }) {
+  return (
+    <div className="fixed top-2 right-2 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/60 backdrop-blur-sm text-xs">
+      <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} />
+      <span className="text-pink-400">{connected ? t('app.connecting') : t('app.reconnecting')}</span>
+    </div>
+  );
+}
+
+function PlayerHeader({ name, score, rank, total }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-3 bg-white/50 backdrop-blur-sm border-b border-pink-100">
+      <span className="font-bold text-pink-600 truncate" style={{ maxWidth: '35%' }}>{name}</span>
+      <div className="text-center">
+        <span className="font-black text-yellow-500 text-lg">{t('player.header.pt', { score })}</span>
+      </div>
+      <span className="text-pink-400 text-sm font-bold">
+        {rank > 0 ? t('player.header.rank', { rank, total }) : ''}
+      </span>
+    </div>
+  );
+}
+
 function LoginScreen({ send, connected }) {
-  const { dispatch } = useGame();
+  const { dispatch, state } = useGame();
   const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || '');
   const [submitting, setSubmitting] = useState(false);
+  const [nameError, setNameError] = useState(null);
 
   const handleSubmit = () => {
     if (!name.trim() || !connected) return;
     setSubmitting(true);
-    const existingId = localStorage.getItem(PLAYER_ID_KEY);
-    send({ action: 'register', name: name.trim(), playerId: existingId });
+    setNameError(null);
+    send({ action: 'register', name: name.trim(), playerId: localStorage.getItem(PLAYER_ID_KEY) });
     localStorage.setItem(PLAYER_NAME_KEY, name.trim());
   };
 
-  // Listen for registration result via context
-  const { state } = useGame();
   useEffect(() => {
-    if (state.playerId) {
-      localStorage.setItem(PLAYER_ID_KEY, state.playerId);
+    if (state.lastError?.includes('既に使われています')) {
+      setNameError(state.lastError);
       setSubmitting(false);
+      dispatch({ type: 'CLEAR_ERROR' });
     }
+  }, [state.lastError]);
+
+  useEffect(() => {
+    if (state.playerId) { localStorage.setItem(PLAYER_ID_KEY, state.playerId); setSubmitting(false); }
   }, [state.playerId]);
 
   return (
-    <div className="min-h-dvh bg-quiz-bg flex flex-col items-center justify-center px-6">
-      <ConnectionBadge connected={connected} />
-      <div className="animate-fade-in text-center mb-10">
-        <div className="text-5xl mb-3">🎯</div>
-        <h1 className="font-display font-black text-3xl text-quiz-text tracking-tight">
-          クイズ大会
-        </h1>
-        <p className="text-quiz-muted mt-2 text-sm">名前を入力して参加しよう</p>
+    <Shell>
+      <ConnDot connected={connected} />
+      <div className="flex-1 flex flex-col items-center justify-center px-6">
+        <div className="animate-fade-in text-center mb-10">
+          <p className="text-5xl mb-3">🎀✨</p>
+          <h1 className="font-black text-3xl text-pink-500" style={{ textShadow: '1px 1px 8px rgba(255,107,157,0.3)' }}>
+            {t('app.title')}
+          </h1>
+          <p className="text-pink-300 mt-2 text-sm">{t('player.login.subtitle')}</p>
+        </div>
+        <div className="w-full max-w-sm bg-white/70 backdrop-blur-sm rounded-3xl border-2 border-pink-200 p-5 shadow-xl shadow-pink-100 animate-slide-up">
+          {nameError && (
+            <div className="mb-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-500 text-sm">{nameError}</div>
+          )}
+          <input type="text" value={name}
+            onChange={(e) => { setName(e.target.value); setNameError(null); }}
+            onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+            placeholder={t('player.login.placeholder')} maxLength={20}
+            className="w-full bg-pink-50 border-2 border-pink-200 rounded-xl px-4 py-3 text-lg text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
+            autoFocus />
+          <button onClick={handleSubmit} disabled={!name.trim() || !connected || submitting}
+            className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-pink-400 to-rose-400 text-white font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95">
+            {submitting ? t('player.login.submitting') : t('player.login.submit')}
+          </button>
+        </div>
       </div>
-
-      <Card className="w-full max-w-sm animate-slide-up">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-          placeholder="あなたの名前"
-          maxLength={20}
-          className="w-full bg-quiz-surface border border-white/10 rounded-xl px-4 py-3 text-lg text-quiz-text font-body placeholder:text-quiz-muted/50 focus:outline-none focus:border-quiz-teal/50 focus:ring-1 focus:ring-quiz-teal/30 transition-colors"
-          autoFocus
-        />
-        <Button
-          onClick={handleSubmit}
-          disabled={!name.trim() || !connected || submitting}
-          variant="accent"
-          size="lg"
-          className="w-full mt-4"
-        >
-          {submitting ? '接続中...' : '参加する'}
-        </Button>
-      </Card>
-    </div>
+    </Shell>
   );
 }
 
-/* ── Header bar ── */
-function PlayerHeader({ name, score }) {
-  return (
-    <div className="flex items-center justify-between px-4 py-3 bg-quiz-surface/50 border-b border-white/5">
-      <span className="font-display font-bold text-quiz-text truncate max-w-[50%]">{name}</span>
-      <span className="font-mono font-bold text-quiz-gold text-lg">{score} pt</span>
-    </div>
-  );
-}
-
-/* ── Waiting ── */
-function WaitingScreen() {
+function WaitingScreen({ status }) {
+  const msg = status === 'init' ? t('player.waiting.init')
+    : status === 'accepting' ? t('player.waiting.accepting')
+    : t('player.waiting.default');
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
-      <div className="text-6xl mb-4 animate-pulse">⏳</div>
-      <p className="font-display font-bold text-xl text-quiz-text">次の問題をお待ちください</p>
-      <p className="text-quiz-muted text-sm mt-2">出題されると自動で切り替わります</p>
+      <div className="text-6xl mb-4 animate-pulse">🌸</div>
+      <p className="font-bold text-xl text-pink-500">{msg}</p>
+      <p className="text-pink-300 text-sm mt-2">{t('player.waiting.hint')}</p>
     </div>
   );
 }
 
-/* ── Answer Input ── */
 function AnswerScreen({ quiz, send }) {
   const [textAnswer, setTextAnswer] = useState('');
-  const [selectedChoice, setSelectedChoice] = useState(null);
-
   if (!quiz) return null;
 
-  const handleSubmit = () => {
-    if (quiz.questionType === 'choice' && selectedChoice !== null) {
-      send({
-        action: 'submit_answer',
-        quizId: quiz.quizId,
-        choiceIndex: selectedChoice,
-      });
-    } else if (quiz.questionType === 'text' && textAnswer.trim()) {
-      send({
-        action: 'submit_answer',
-        quizId: quiz.quizId,
-        answerText: textAnswer.trim(),
-      });
-    }
+  const handleChoice = (i) => {
+    send({ action: 'submit_answer', quizId: quiz.quizId, choiceIndex: i });
   };
-
-  const canSubmit =
-    quiz.questionType === 'choice' ? selectedChoice !== null : textAnswer.trim().length > 0;
+  const handleTextSubmit = () => {
+    if (!textAnswer.trim()) return;
+    send({ action: 'submit_answer', quizId: quiz.quizId, answerText: textAnswer.trim() });
+  };
 
   return (
     <div className="flex-1 flex flex-col px-4 py-6 animate-slide-up">
-      {/* Question header */}
       <div className="text-center mb-4">
-        <span className="inline-block px-3 py-1 rounded-full bg-quiz-accent/20 text-quiz-accent text-xs font-bold mb-2">
-          第{quiz.cornerNumber}コーナー Q{quiz.questionNumber}
+        <span className="inline-block px-3 py-1 rounded-full bg-pink-100 text-pink-500 text-xs font-bold border border-pink-200">
+          {t('player.answer.corner', { corner: quiz.cornerNumber, num: quiz.questionNumber })}
         </span>
-        {quiz.cornerTitle && (
-          <p className="text-quiz-muted text-xs">{quiz.cornerTitle}</p>
-        )}
+        {quiz.cornerTitle && <p className="text-pink-300 text-xs mt-1">{quiz.cornerTitle}</p>}
       </div>
-
-      {/* Question text */}
-      <Card className="mb-6">
-        <p className="font-body text-lg leading-relaxed text-quiz-text">{quiz.questionText}</p>
-        <p className="text-right text-quiz-gold text-sm font-bold mt-2">+{quiz.points}pt</p>
-      </Card>
-
-      {/* Input area */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-2xl border-2 border-pink-100 p-5 mb-6 shadow-sm">
+        <p className="text-lg leading-relaxed text-gray-700 font-bold">{quiz.questionText}</p>
+        <p className="text-right text-yellow-500 text-sm font-bold mt-2">{t('player.answer.points', { pts: quiz.points })}</p>
+      </div>
       <div className="flex-1">
         {quiz.questionType === 'text' ? (
-          <input
-            type="text"
-            value={textAnswer}
-            onChange={(e) => setTextAnswer(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && canSubmit && handleSubmit()}
-            placeholder="回答を入力..."
-            className="w-full bg-quiz-surface border border-white/10 rounded-xl px-4 py-4 text-xl text-quiz-text font-body placeholder:text-quiz-muted/50 focus:outline-none focus:border-quiz-teal/50 focus:ring-1 focus:ring-quiz-teal/30 transition-colors"
-            autoFocus
-          />
+          <div>
+            <input type="text" value={textAnswer}
+              onChange={(e) => setTextAnswer(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleTextSubmit()}
+              placeholder={t('player.answer.textPlaceholder')}
+              className="w-full bg-white/70 border-2 border-pink-200 rounded-xl px-4 py-4 text-xl text-gray-700 placeholder:text-pink-300 focus:outline-none focus:border-pink-400"
+              autoFocus />
+            <button onClick={handleTextSubmit} disabled={!textAnswer.trim()}
+              className="w-full mt-3 px-6 py-4 bg-gradient-to-r from-pink-400 to-rose-400 text-white text-lg font-bold rounded-xl disabled:opacity-40 shadow-lg shadow-pink-200 active:scale-95">
+              {t('player.answer.submit')}
+            </button>
+          </div>
         ) : (
           <div className="space-y-3">
             {quiz.choices?.map((choice, i) => (
-              <button
-                key={i}
-                onClick={() => setSelectedChoice(i)}
-                className={`w-full text-left px-5 py-4 rounded-xl border-2 transition-all duration-200 font-body text-base ${
-                  selectedChoice === i
-                    ? 'border-quiz-teal bg-quiz-teal/10 text-quiz-teal'
-                    : 'border-white/10 bg-quiz-surface text-quiz-text hover:border-white/20'
-                }`}
-              >
-                <span className="font-mono font-bold mr-3 text-sm opacity-60">
-                  {String.fromCharCode(65 + i)}
-                </span>
-                {choice}
+              <button key={i} onClick={() => handleChoice(i)}
+                className="w-full text-left px-5 py-4 rounded-xl border-2 border-pink-100 bg-white/70 text-gray-600 hover:border-pink-300 hover:bg-pink-50 transition-all font-bold text-base active:scale-95">
+                <span className="font-black mr-3 text-sm text-pink-300">{String.fromCharCode(65 + i)}</span>{choice}
               </button>
             ))}
           </div>
         )}
       </div>
-
-      {/* Submit button */}
-      <div className="mt-6 pb-safe">
-        <Button onClick={handleSubmit} disabled={!canSubmit} variant="teal" size="lg" className="w-full">
-          回答する
-        </Button>
-      </div>
     </div>
   );
 }
 
-/* ── Submitted (waiting for judgment) ── */
 function SubmittedScreen({ answer }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
       <div className="text-5xl mb-4">✅</div>
-      <p className="font-display font-bold text-xl text-quiz-text mb-2">回答を送信しました！</p>
-      <Card className="text-center mt-4">
-        <p className="text-quiz-muted text-sm">あなたの回答</p>
-        <p className="font-display font-bold text-2xl text-quiz-teal mt-1">{answer.answerText}</p>
-      </Card>
-      <p className="text-quiz-muted text-sm mt-6">結果発表をお待ちください...</p>
+      <p className="font-bold text-xl text-pink-500 mb-2">{t('player.submitted.title')}</p>
+      <div className="bg-white/70 rounded-2xl border-2 border-pink-100 p-5 text-center mt-4">
+        <p className="text-pink-300 text-sm">{t('player.submitted.yourAnswer')}</p>
+        <p className="font-black text-2xl text-pink-600 mt-1">{answer.answerText}</p>
+      </div>
+      <p className="text-pink-300 text-sm mt-6">{t('player.submitted.waiting')}</p>
     </div>
   );
 }
 
-/* ── Judging (answer closed, admin judging) ── */
 function JudgingScreen({ answer }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
-      <div className="text-5xl mb-4 animate-pulse">⚖️</div>
-      <p className="font-display font-bold text-xl text-quiz-text">回答を締め切りました</p>
+      <div className="text-5xl mb-4 animate-pulse">🔍</div>
+      <p className="font-bold text-xl text-pink-500">{t('player.judging.title')}</p>
       {answer ? (
-        <Card className="text-center mt-4">
-          <p className="text-quiz-muted text-sm">あなたの回答</p>
-          <p className="font-display font-bold text-xl text-quiz-teal mt-1">{answer.answerText}</p>
-        </Card>
-      ) : (
-        <p className="text-quiz-muted text-sm mt-4">未回答</p>
-      )}
-      <p className="text-quiz-muted text-sm mt-6">判定中...</p>
+        <div className="bg-white/70 rounded-2xl border-2 border-pink-100 p-5 text-center mt-4">
+          <p className="text-pink-300 text-sm">{t('player.judging.yourAnswer')}</p>
+          <p className="font-bold text-xl text-pink-600 mt-1">{answer.answerText}</p>
+        </div>
+      ) : <p className="text-pink-300 text-sm mt-4">{t('player.judging.noAnswer')}</p>}
     </div>
   );
 }
 
-/* ── Result ── */
-function ResultScreen({ judgment, revealData, score }) {
-  const isCorrect = judgment?.isCorrect;
+function ResultScreen({ myAnswer, judgment, revealData, score }) {
+  const isCorrect = judgment?.isCorrect === true;
+  const answered = !!myAnswer;
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
-      {isCorrect && <Confetti />}
-      <div className="text-6xl mb-4">{isCorrect ? '🎉' : isCorrect === false ? '😢' : '🤔'}</div>
-      <p className="font-display font-black text-3xl mb-2">
-        {isCorrect ? (
-          <span className="text-quiz-green">正解！</span>
-        ) : isCorrect === false ? (
-          <span className="text-quiz-accent">不正解</span>
-        ) : (
-          <span className="text-quiz-muted">未回答</span>
-        )}
+      {isCorrect && <PinkConfetti />}
+      <div className="text-6xl mb-4">{isCorrect ? '🎉' : answered ? '😢' : '🤔'}</div>
+      <p className="font-black text-3xl mb-2">
+        {isCorrect ? <span className="text-green-500">{t('player.result.correct')}</span> :
+         answered ? <span className="text-red-400">{t('player.result.incorrect')}</span> :
+         <span className="text-pink-300">{t('player.result.noAnswer')}</span>}
       </p>
       {isCorrect && judgment.pointsAwarded > 0 && (
-        <p className="font-mono font-bold text-2xl text-quiz-gold animate-count-up">
-          +{judgment.pointsAwarded} pt
-        </p>
+        <p className="font-black text-2xl text-yellow-500 animate-count-up">{t('player.result.addPoints', { pts: judgment.pointsAwarded })}</p>
       )}
-
       {revealData && (
-        <Card className="text-center mt-6 w-full max-w-sm">
-          <p className="text-quiz-muted text-sm">正解</p>
-          <p className="font-display font-bold text-2xl text-quiz-gold mt-1">
-            {revealData.correctAnswer}
-          </p>
-        </Card>
+        <div className="bg-white/70 rounded-2xl border-2 border-pink-200 p-5 text-center mt-6 w-full max-w-sm">
+          <p className="text-pink-300 text-sm">{t('player.result.correctIs')}</p>
+          <p className="font-black text-2xl text-pink-600 mt-1">{revealData.correctAnswer}</p>
+        </div>
       )}
-
-      <div className="mt-6 px-4 py-2 rounded-xl bg-quiz-surface">
-        <span className="text-quiz-muted text-sm">あなたの合計: </span>
-        <span className="font-mono font-bold text-quiz-gold text-lg">{score} pt</span>
+      <div className="mt-6 px-4 py-2 rounded-xl bg-white/50 border border-pink-100">
+        <span className="text-pink-400 text-sm">{t('player.result.total')} </span>
+        <span className="font-black text-yellow-500 text-lg">{score} pt</span>
       </div>
     </div>
   );
 }
 
-/* ── Scores overlay ── */
 function ScoresScreen({ rankings, playerId }) {
+  const sorted = [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((r, i) => ({ ...r, rank: i + 1 }));
   return (
     <div className="flex-1 flex flex-col px-4 py-6 animate-fade-in">
-      <h2 className="font-display font-black text-2xl text-center mb-6">🏆 現在の成績</h2>
+      <h2 className="font-black text-2xl text-center text-pink-500 mb-6">{t('player.scores.title')}</h2>
       <div className="space-y-2">
-        {rankings.map((r, i) => {
+        {sorted.map((r, i) => {
           const isMe = r.playerId === playerId;
           return (
-            <div
-              key={r.playerId || i}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                isMe ? 'bg-quiz-teal/15 border border-quiz-teal/30' : 'bg-quiz-surface/50'
-              }`}
-              style={{ animationDelay: `${i * 0.05}s` }}
-            >
-              <span className="font-mono font-bold text-quiz-muted w-8 text-center">
-                {r.rank}
+            <div key={r.playerId || i} className={`flex items-center gap-3 px-4 py-3 rounded-xl ${
+              isMe ? 'bg-pink-100 border-2 border-pink-300' : 'bg-white/50 border border-pink-100'
+            }`}>
+              <span className="font-black text-pink-400 w-8 text-center">{i < 3 ? ['🥇','🥈','🥉'][i] : r.rank}</span>
+              <span className={`flex-1 font-bold truncate ${isMe ? 'text-pink-600' : 'text-gray-600'}`}>
+                {r.name} {isMe && t('player.scores.you')}
               </span>
-              <span className={`flex-1 font-body font-bold truncate ${isMe ? 'text-quiz-teal' : 'text-quiz-text'}`}>
-                {r.name} {isMe && '(あなた)'}
-              </span>
-              <span className="font-mono font-bold text-quiz-gold">{r.totalScore} pt</span>
+              <span className="font-black text-yellow-500">{r.totalScore} pt</span>
             </div>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function PinkConfetti() {
+  const colors = ['#ff6b9d', '#ffd700', '#ff9ecd', '#ffb6c1', '#f0a0ff', '#87ceeb'];
+  return (
+    <div className="fixed inset-0 pointer-events-none z-50">
+      {Array.from({ length: 30 }, (_, i) => (
+        <div key={i} className="confetti-particle" style={{
+          left: `${Math.random() * 100}%`, backgroundColor: colors[i % colors.length],
+          animationDelay: `${Math.random() * 2}s`,
+          width: `${6 + Math.random() * 6}px`, height: `${6 + Math.random() * 6}px`,
+          borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+        }} />
+      ))}
     </div>
   );
 }

@@ -7,13 +7,13 @@ import {
   getQuiz,
   getAnswersForQuiz,
   getAllPlayers,
+  putPlayer,
 } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
 
 export async function handleSubmitAnswer(connectionId, body) {
   const { quizId, answerText, choiceIndex } = body;
 
-  // Verify connection is a player
   const conn = await getConnection(connectionId);
   if (!conn || conn.role !== 'player' || !conn.playerId) {
     await sendToConnection(connectionId, {
@@ -61,8 +61,11 @@ export async function handleSubmitAnswer(connectionId, body) {
   }
 
   const now = new Date().toISOString();
+  const elapsedMs = gameState.questionStartedAt
+    ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
+    : null;
 
-  // Build answer record
+  // Build answer record — no auto-judging, isCorrect stays null
   const answer = {
     quizId,
     playerId: conn.playerId,
@@ -79,7 +82,13 @@ export async function handleSubmitAnswer(connectionId, body) {
     answer.answerText = (answerText || '').trim();
   }
 
+  // Auto-judge on submission
   await putAnswer(answer);
+
+  // Update player score immediately if auto-judged correct
+  // Increment answer count
+  player.answerCount = (player.answerCount || 0) + 1;
+  await putPlayer(player);
 
   // Confirm to player
   await sendToConnection(connectionId, {
@@ -88,7 +97,7 @@ export async function handleSubmitAnswer(connectionId, body) {
     answeredAt: now,
   });
 
-  // Notify admin with full answer details
+  // Notify admin
   await broadcastToRole('admin', {
     event: 'new_answer',
     playerId: conn.playerId,
@@ -96,12 +105,11 @@ export async function handleSubmitAnswer(connectionId, body) {
     answerText: answer.answerText,
     choiceIndex: answer.choiceIndex,
     answeredAt: now,
-    elapsedMs: gameState.questionStartedAt
-      ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
-      : null,
+    elapsedMs,
+    isCorrect: null,
   });
 
-  // Notify display with answer count
+  // Notify display with answer count only (no correct players — judging is manual)
   const allAnswers = await getAnswersForQuiz(quizId);
   const allPlayers = await getAllPlayers();
   await broadcastToRole('display', {

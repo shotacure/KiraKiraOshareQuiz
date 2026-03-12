@@ -1,10 +1,19 @@
-import { getConnection, putQuizBatch, getAllQuizzes } from '../lib/db.mjs';
-import { sendToConnection } from '../lib/broadcast.mjs';
+import { getConnection, putQuizBatch, getAllQuizzes, updateGameState, getGameState } from '../lib/db.mjs';
+import { sendToConnection, broadcastToAll } from '../lib/broadcast.mjs';
 
 export async function handleLoadQuizzes(connectionId, body) {
   const conn = await getConnection(connectionId);
   if (!conn || conn.role !== 'admin') {
     return { statusCode: 403, body: 'Admin only' };
+  }
+
+  const gameState = await getGameState();
+  if (gameState.status !== 'init') {
+    await sendToConnection(connectionId, {
+      event: 'error',
+      message: '初期状態でのみクイズを読み込めます。リセットしてください。',
+    });
+    return { statusCode: 400, body: 'Can only load in init state' };
   }
 
   const { quizzes } = body;
@@ -16,7 +25,6 @@ export async function handleLoadQuizzes(connectionId, body) {
     return { statusCode: 400, body: 'No quizzes provided' };
   }
 
-  // Validate and normalize quiz data
   const validated = [];
   for (let i = 0; i < quizzes.length; i++) {
     const q = quizzes[i];
@@ -34,7 +42,7 @@ export async function handleLoadQuizzes(connectionId, body) {
       cornerTitle: q.cornerTitle || '',
       questionNumber: q.questionNumber || i + 1,
       questionText: q.questionText,
-      questionType: q.questionType, // "text" or "choice"
+      questionType: q.questionType,
       modelAnswer: q.modelAnswer || null,
       acceptableAnswers: q.acceptableAnswers || [],
       choices: q.choices || [],
@@ -46,12 +54,26 @@ export async function handleLoadQuizzes(connectionId, body) {
 
   await putQuizBatch(validated);
 
-  // Send back the full quiz list
+  // Transition to accepting state
+  await updateGameState({
+    status: 'accepting',
+    questionHistory: [],
+  });
+
   const allQuizzes = await getAllQuizzes();
+
+  // Notify admin
   await sendToConnection(connectionId, {
     event: 'quizzes_loaded',
     count: validated.length,
     quizzes: allQuizzes,
+  });
+
+  // Broadcast state change to all
+  await broadcastToAll({
+    event: 'game_state_update',
+    status: 'accepting',
+    totalQuizCount: allQuizzes.length,
   });
 
   return { statusCode: 200, body: `${validated.length} quizzes loaded` };
