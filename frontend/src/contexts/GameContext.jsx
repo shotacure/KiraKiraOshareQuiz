@@ -1,4 +1,5 @@
 import { createContext, useContext, useReducer, useCallback } from 'react';
+import { t } from '../i18n';
 
 const GameContext = createContext(null);
 
@@ -256,6 +257,21 @@ export function useGame() {
   return ctx;
 }
 
+/**
+ * Translate a server error code to a user-facing message via i18n.
+ * Server sends { code: 'name_taken', name: 'foo', message: 'name_taken' }
+ * We look up 'error.name_taken' in ja.js and interpolate params.
+ */
+function translateError(msg) {
+  const code = msg.code || msg.message;
+  const i18nKey = `error.${code}`;
+  const translated = t(i18nKey, msg);
+  // If t() returns the key itself (not found), fall back to raw message
+  return translated === i18nKey ? (msg.message || code) : translated;
+}
+
+const AUTH_ERROR_CODES = ['wrong_password', 'invalid_role'];
+
 export function useMessageHandler() {
   const { dispatch } = useGame();
 
@@ -288,11 +304,15 @@ export function useMessageHandler() {
       if (type) {
         dispatch({ type, payload: msg });
       } else if (msg.event === 'error') {
-        console.error('[Server Error]', msg.message);
-        if (msg.message?.includes('パスワード') || msg.message?.includes('ロール')) {
-          dispatch({ type: 'AUTH_ERROR', payload: msg.message });
+        const code = msg.code || msg.message;
+        const translated = translateError(msg);
+        console.error('[Server Error]', code, translated);
+
+        if (AUTH_ERROR_CODES.includes(code)) {
+          dispatch({ type: 'AUTH_ERROR', payload: translated });
         } else {
-          dispatch({ type: 'SET_ERROR', payload: msg.message });
+          // Store both code and translated message for consumers
+          dispatch({ type: 'SET_ERROR', payload: { code, message: translated } });
         }
       } else {
         console.log('[WS] Unhandled event:', msg.event, msg);

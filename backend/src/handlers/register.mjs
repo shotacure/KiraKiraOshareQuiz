@@ -8,41 +8,33 @@ export async function handleRegister(connectionId, body) {
   if (!name || name.trim().length === 0) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '名前を入力してください',
+      code: 'name_required',
+      message: 'name_required',
     });
     return { statusCode: 400, body: 'Name required' };
   }
 
-  // Reject registration when game is in init state (before quiz data loaded)
   const gameState = await getGameState();
-  if (gameState.status === 'init') {
-    await sendToConnection(connectionId, {
-      event: 'registration_rejected',
-      reason: 'not_accepting',
-      message: 'まだ参加を受け付けていません',
-    });
-    return { statusCode: 400, body: 'Not accepting registrations yet' };
-  }
-
   const trimmedName = name.trim();
   let playerId = existingPlayerId;
   let player = null;
 
-  // Reconnection: try to find existing player
+  // Reconnection: try to find existing player by saved ID
   if (playerId) {
     player = await getPlayer(playerId);
   }
 
   if (player) {
-    // Reconnecting - update connectionId
+    // Existing player reconnecting — always allowed regardless of game state
     player.connectionId = connectionId;
-    // Allow name change only if not taken by someone else
     if (trimmedName !== player.name) {
       const existing = await getPlayerByName(trimmedName);
       if (existing && existing.playerId !== playerId) {
         await sendToConnection(connectionId, {
           event: 'error',
-          message: `"${trimmedName}" は既に使われています。別の名前を入力してください`,
+          code: 'name_taken',
+          name: trimmedName,
+          message: 'name_taken',
         });
         return { statusCode: 400, body: 'Name taken' };
       }
@@ -50,12 +42,24 @@ export async function handleRegister(connectionId, body) {
     }
     await putPlayer(player);
   } else {
-    // New player - check for duplicate name
+    // New player — only allowed during 'accepting' state
+    if (gameState.status !== 'accepting') {
+      await sendToConnection(connectionId, {
+        event: 'registration_rejected',
+        reason: gameState.status === 'init' ? 'not_accepting' : 'closed',
+        message: gameState.status === 'init' ? 'not_accepting' : 'registration_closed',
+      });
+      return { statusCode: 400, body: 'Not accepting registrations' };
+    }
+
+    // Check for duplicate name
     const existing = await getPlayerByName(trimmedName);
     if (existing) {
       await sendToConnection(connectionId, {
         event: 'error',
-        message: `"${trimmedName}" は既に使われています。別の名前を入力してください`,
+        code: 'name_taken',
+        name: trimmedName,
+        message: 'name_taken',
       });
       return { statusCode: 400, body: 'Name taken' };
     }
@@ -73,14 +77,12 @@ export async function handleRegister(connectionId, body) {
     await putPlayer(player);
   }
 
-  // Update connection record
   await putConnection(connectionId, {
     role: 'player',
     playerId,
     connectedAt: new Date().toISOString(),
   });
 
-  // Build response including current answer state for reconnecting players
   const response = {
     event: 'registered',
     playerId,
@@ -107,7 +109,6 @@ export async function handleRegister(connectionId, body) {
 
   await sendToConnection(connectionId, response);
 
-  // Notify admin/display about new player
   const allPlayers = await getAllPlayers();
   await broadcastToRoles(['admin', 'display'], {
     event: 'player_joined',

@@ -9,11 +9,11 @@ export async function handleStartQuestion(connectionId, body) {
 
   const gameState = await getGameState();
 
-  // Enforce state flow: can only start question from accepting or showing_answer
   if (gameState.status !== 'accepting' && gameState.status !== 'showing_answer') {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '現在の状態では出題できません',
+      code: 'invalid_state',
+      message: 'invalid_state',
     });
     return { statusCode: 400, body: 'Invalid state for starting question' };
   }
@@ -22,7 +22,8 @@ export async function handleStartQuestion(connectionId, body) {
   if (!quizId) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '問題IDが指定されていません',
+      code: 'quiz_id_required',
+      message: 'quiz_id_required',
     });
     return { statusCode: 400, body: 'quizId required' };
   }
@@ -31,7 +32,8 @@ export async function handleStartQuestion(connectionId, body) {
   if (!quiz) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '問題が見つかりません',
+      code: 'quiz_not_found',
+      message: 'quiz_not_found',
     });
     return { statusCode: 404, body: 'Quiz not found' };
   }
@@ -55,13 +57,10 @@ export async function handleStartQuestion(connectionId, body) {
   const playerPayload = {
     event: 'question_started',
     quizId: quiz.quizId,
-    cornerNumber: quiz.cornerNumber,
-    cornerTitle: quiz.cornerTitle,
     questionNumber: quiz.questionNumber,
     questionText: quiz.questionText,
     questionType: quiz.questionType,
     points: quiz.points,
-    // Progress info
     questionIndex: history.length,
     totalQuizCount: allQuizzes.length,
   };

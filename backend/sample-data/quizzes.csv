@@ -1,0 +1,6 @@
+questionNumber,questionText,questionType,modelAnswer,acceptableAnswers,choices,correctChoiceIndex,points
+1,日本で一番高い山は何でしょう？,text,富士山,"富士山|ふじさん|ふじ山",,,10
+2,東京タワーの高さは次のうちどれでしょう？,choice,,,233m|333m|433m|533m,1,10
+3,「吾輩は猫である」の作者は誰でしょう？,text,夏目漱石,"夏目漱石|なつめそうせき",,,10
+4,サッカーで1チームのフィールド上の人数は？（GK含む）,choice,,,9人|10人|11人|12人,2,20
+5,日本の都道府県の数はいくつでしょう？,text,47,"47|四十七",,,10

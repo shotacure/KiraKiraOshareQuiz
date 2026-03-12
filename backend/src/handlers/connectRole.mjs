@@ -7,7 +7,8 @@ export async function handleConnectRole(connectionId, body) {
   if (!['admin', 'display'].includes(role)) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '無効なロールです',
+      code: 'invalid_role',
+      message: 'invalid_role',
     });
     return { statusCode: 400, body: 'Invalid role' };
   }
@@ -16,7 +17,8 @@ export async function handleConnectRole(connectionId, body) {
   if (secret !== adminSecret) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: 'パスワードが正しくありません',
+      code: 'wrong_password',
+      message: 'wrong_password',
     });
     return { statusCode: 403, body: 'Unauthorized' };
   }
@@ -45,8 +47,6 @@ export async function handleConnectRole(connectionId, body) {
     })),
     quizzes: quizzes.map((q) => ({
       quizId: q.quizId,
-      cornerNumber: q.cornerNumber,
-      cornerTitle: q.cornerTitle,
       questionNumber: q.questionNumber,
       questionText: q.questionText,
       questionType: q.questionType,
@@ -63,7 +63,6 @@ export async function handleConnectRole(connectionId, body) {
     })),
   };
 
-  // If there's an active question and role is admin, include current answers
   if (role === 'admin' && gameState.currentQuizId) {
     const answers = await getAnswersForQuiz(gameState.currentQuizId);
     fullState.currentAnswers = answers.map((a) => ({
