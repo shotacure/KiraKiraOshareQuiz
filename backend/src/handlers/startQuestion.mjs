@@ -1,11 +1,21 @@
-import { getConnection, updateGameState, getQuiz, getGameState } from '../lib/db.mjs';
+import { getConnection, updateGameState, getQuiz, getGameState, getAllQuizzes } from '../lib/db.mjs';
 import { sendToConnection, broadcastToAll } from '../lib/broadcast.mjs';
 
 export async function handleStartQuestion(connectionId, body) {
-  // Verify admin
   const conn = await getConnection(connectionId);
   if (!conn || conn.role !== 'admin') {
     return { statusCode: 403, body: 'Admin only' };
+  }
+
+  const gameState = await getGameState();
+
+  // Enforce state flow: can only start question from accepting or showing_answer
+  if (gameState.status !== 'accepting' && gameState.status !== 'showing_answer') {
+    await sendToConnection(connectionId, {
+      event: 'error',
+      message: '現在の状態では出題できません',
+    });
+    return { statusCode: 400, body: 'Invalid state for starting question' };
   }
 
   const { quizId } = body;
@@ -27,13 +37,13 @@ export async function handleStartQuestion(connectionId, body) {
   }
 
   const now = new Date().toISOString();
-  const gameState = await getGameState();
   const history = gameState.questionHistory || [];
   if (!history.includes(quizId)) {
     history.push(quizId);
   }
 
-  // Update game state to answering
+  const allQuizzes = await getAllQuizzes();
+
   await updateGameState({
     status: 'answering',
     currentQuizId: quizId,
@@ -42,7 +52,6 @@ export async function handleStartQuestion(connectionId, body) {
     questionHistory: history,
   });
 
-  // Build question payload for players (no answer info)
   const playerPayload = {
     event: 'question_started',
     quizId: quiz.quizId,
@@ -52,13 +61,15 @@ export async function handleStartQuestion(connectionId, body) {
     questionText: quiz.questionText,
     questionType: quiz.questionType,
     points: quiz.points,
+    // Progress info
+    questionIndex: history.length,
+    totalQuizCount: allQuizzes.length,
   };
 
   if (quiz.questionType === 'choice') {
     playerPayload.choices = quiz.choices;
   }
 
-  // Broadcast to all (admin/display get same structure, admin already has full quiz data)
   await broadcastToAll(playerPayload);
 
   return { statusCode: 200, body: 'Question started' };

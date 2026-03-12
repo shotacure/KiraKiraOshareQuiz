@@ -7,13 +7,14 @@ import {
   getQuiz,
   getAnswersForQuiz,
   getAllPlayers,
+  updateAnswerJudgment,
+  putPlayer,
 } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
 
 export async function handleSubmitAnswer(connectionId, body) {
   const { quizId, answerText, choiceIndex } = body;
 
-  // Verify connection is a player
   const conn = await getConnection(connectionId);
   if (!conn || conn.role !== 'player' || !conn.playerId) {
     await sendToConnection(connectionId, {
@@ -61,6 +62,9 @@ export async function handleSubmitAnswer(connectionId, body) {
   }
 
   const now = new Date().toISOString();
+  const elapsedMs = gameState.questionStartedAt
+    ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
+    : null;
 
   // Build answer record
   const answer = {
@@ -79,7 +83,36 @@ export async function handleSubmitAnswer(connectionId, body) {
     answer.answerText = (answerText || '').trim();
   }
 
+  // Auto-judge on submission
+  let autoCorrect = null;
+  if (quiz.questionType === 'choice') {
+    autoCorrect = choiceIndex === quiz.correctChoiceIndex;
+  } else if (quiz.acceptableAnswers?.length > 0) {
+    const normalized = answer.answerText.toLowerCase();
+    autoCorrect = quiz.acceptableAnswers.some(
+      (acc) => acc.toLowerCase() === normalized
+    );
+  } else if (quiz.modelAnswer) {
+    autoCorrect = answer.answerText.toLowerCase() === quiz.modelAnswer.toLowerCase();
+  }
+
+  if (autoCorrect !== null) {
+    answer.isCorrect = autoCorrect;
+    answer.pointsAwarded = autoCorrect ? (quiz.points || 10) : 0;
+  }
+
   await putAnswer(answer);
+
+  // Update player score immediately if auto-judged correct
+  if (autoCorrect === true) {
+    player.totalScore = (player.totalScore || 0) + answer.pointsAwarded;
+    player.correctCount = (player.correctCount || 0) + 1;
+    player.answerCount = (player.answerCount || 0) + 1;
+    await putPlayer(player);
+  } else {
+    player.answerCount = (player.answerCount || 0) + 1;
+    await putPlayer(player);
+  }
 
   // Confirm to player
   await sendToConnection(connectionId, {
@@ -96,18 +129,30 @@ export async function handleSubmitAnswer(connectionId, body) {
     answerText: answer.answerText,
     choiceIndex: answer.choiceIndex,
     answeredAt: now,
-    elapsedMs: gameState.questionStartedAt
-      ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
-      : null,
+    elapsedMs,
+    isCorrect: answer.isCorrect,
   });
 
-  // Notify display with answer count
+  // Notify display with answer count + correct players
   const allAnswers = await getAnswersForQuiz(quizId);
   const allPlayers = await getAllPlayers();
+  const correctPlayers = allAnswers
+    .filter((a) => a.isCorrect === true)
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt))
+    .map((a, i) => ({
+      rank: i + 1,
+      playerId: a.playerId,
+      playerName: a.playerName,
+      elapsedMs: gameState.questionStartedAt
+        ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
+        : null,
+    }));
+
   await broadcastToRole('display', {
     event: 'answer_count_update',
     count: allAnswers.length,
     total: allPlayers.length,
+    correctPlayers,
   });
 
   return { statusCode: 200, body: 'Answer submitted' };

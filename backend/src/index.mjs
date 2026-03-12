@@ -9,7 +9,7 @@ import { handleJudge } from './handlers/judge.mjs';
 import { handleJudgeBulk } from './handlers/judgeBulk.mjs';
 import { handleRevealAnswer } from './handlers/revealAnswer.mjs';
 import { handleShowScores } from './handlers/showScores.mjs';
-import { handleResetToWaiting } from './handlers/resetToWaiting.mjs';
+import { handleResetAll } from './handlers/resetAll.mjs';
 import { handleLoadQuizzes } from './handlers/loadQuizzes.mjs';
 import { handleGetState } from './handlers/getState.mjs';
 
@@ -23,7 +23,7 @@ const ROUTES = {
   judge_bulk: handleJudgeBulk,
   reveal_answer: handleRevealAnswer,
   show_scores: handleShowScores,
-  reset_to_waiting: handleResetToWaiting,
+  reset_all: handleResetAll,
   load_quizzes: handleLoadQuizzes,
   get_state: handleGetState,
 };
@@ -44,12 +44,10 @@ export const handler = async (event) => {
       return await handleDisconnect(event);
     }
 
-    // $default route — parse body and dispatch by action
     const body = JSON.parse(event.body || '{}');
     const action = body.action;
 
     if (!action || !ROUTES[action]) {
-      // Keepalive ping — respond silently
       if (action === 'ping') {
         return { statusCode: 200, body: 'pong' };
       }

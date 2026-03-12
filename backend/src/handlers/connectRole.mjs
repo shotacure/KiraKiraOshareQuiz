@@ -1,4 +1,4 @@
-import { putConnection, getGameState, getAllPlayers, getAllQuizzes } from '../lib/db.mjs';
+import { putConnection, getGameState, getAllPlayers, getAllQuizzes, getAnswersForQuiz } from '../lib/db.mjs';
 import { sendToConnection } from '../lib/broadcast.mjs';
 
 export async function handleConnectRole(connectionId, body) {
@@ -12,7 +12,6 @@ export async function handleConnectRole(connectionId, body) {
     return { statusCode: 400, body: 'Invalid role' };
   }
 
-  // Verify admin secret
   const adminSecret = process.env.ADMIN_SECRET;
   if (secret !== adminSecret) {
     await sendToConnection(connectionId, {
@@ -22,20 +21,21 @@ export async function handleConnectRole(connectionId, body) {
     return { statusCode: 403, body: 'Unauthorized' };
   }
 
-  // Update connection role
   await putConnection(connectionId, {
     role,
     connectedAt: new Date().toISOString(),
   });
 
-  // Send full state to the newly connected admin/display
   const gameState = await getGameState();
   const players = await getAllPlayers();
   const quizzes = await getAllQuizzes();
 
-  await sendToConnection(connectionId, {
+  const fullState = {
     event: 'full_state',
-    gameState,
+    gameState: {
+      ...gameState,
+      totalQuizCount: quizzes.length,
+    },
     players: players.map((p) => ({
       playerId: p.playerId,
       name: p.name,
@@ -52,7 +52,6 @@ export async function handleConnectRole(connectionId, body) {
       questionType: q.questionType,
       points: q.points,
       order: q.order,
-      // Admin gets full quiz data including answers
       ...(role === 'admin'
         ? {
             modelAnswer: q.modelAnswer,
@@ -62,7 +61,25 @@ export async function handleConnectRole(connectionId, body) {
           }
         : {}),
     })),
-  });
+  };
+
+  // If there's an active question and role is admin, include current answers
+  if (role === 'admin' && gameState.currentQuizId) {
+    const answers = await getAnswersForQuiz(gameState.currentQuizId);
+    fullState.currentAnswers = answers.map((a) => ({
+      playerId: a.playerId,
+      playerName: a.playerName,
+      answerText: a.answerText,
+      choiceIndex: a.choiceIndex,
+      answeredAt: a.answeredAt,
+      isCorrect: a.isCorrect,
+      elapsedMs: gameState.questionStartedAt
+        ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
+        : null,
+    }));
+  }
+
+  await sendToConnection(connectionId, fullState);
 
   return { statusCode: 200, body: `Connected as ${role}` };
 }

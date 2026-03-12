@@ -3,35 +3,32 @@ import { createContext, useContext, useReducer, useCallback } from 'react';
 const GameContext = createContext(null);
 
 const initialState = {
-  // Connection & Auth
   connected: false,
-  role: null, // 'player' | 'admin' | 'display'
+  role: null,
   authed: false,
   authError: null,
   lastError: null,
 
-  // Player
   playerId: null,
   playerName: null,
   totalScore: 0,
 
-  // Game
-  status: 'waiting',
+  status: 'init',
   currentQuiz: null,
   myAnswer: null,
   myJudgment: null,
 
-  // Admin
   players: [],
   quizzes: [],
   answers: [],
   answerCount: 0,
   answerTotal: 0,
+  liveCorrectPlayers: [], // real-time correct players during answering
 
-  // Scores
+  questionHistory: [],
+  totalQuizCount: 0,
+
   rankings: [],
-
-  // Display
   correctPlayers: [],
   correctAnswer: null,
   revealData: null,
@@ -51,18 +48,32 @@ function reducer(state, action) {
         playerId: action.payload.playerId,
         playerName: action.payload.name,
         totalScore: action.payload.totalScore || 0,
-        status: action.payload.gameState?.status || 'waiting',
+        status: action.payload.gameState?.status || state.status,
       };
 
-    case 'FULL_STATE':
-      return {
+    case 'FULL_STATE': {
+      const gs = action.payload.gameState || {};
+      const newState = {
         ...state,
         authed: true,
         authError: null,
-        status: action.payload.gameState?.status || 'waiting',
+        status: gs.status || 'init',
         players: action.payload.players || [],
         quizzes: action.payload.quizzes || [],
+        questionHistory: gs.questionHistory || [],
+        totalQuizCount: gs.totalQuizCount || (action.payload.quizzes || []).length,
       };
+      // Restore current answers if provided (admin reconnect)
+      if (action.payload.currentAnswers) {
+        newState.answers = action.payload.currentAnswers;
+      }
+      // Find current quiz from quizzes list if there's an active one
+      if (gs.currentQuizId && action.payload.quizzes) {
+        const cq = action.payload.quizzes.find(q => q.quizId === gs.currentQuizId);
+        if (cq) newState.currentQuiz = cq;
+      }
+      return newState;
+    }
 
     case 'AUTH_ERROR':
       return { ...state, authed: false, authError: action.payload };
@@ -82,9 +93,12 @@ function reducer(state, action) {
         myJudgment: null,
         answers: [],
         answerCount: 0,
+        liveCorrectPlayers: [],
         correctPlayers: [],
         correctAnswer: null,
         revealData: null,
+        questionHistory: [...new Set([...(state.questionHistory), action.payload.quizId])],
+        totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
       };
 
     case 'ANSWER_SUBMITTED':
@@ -97,16 +111,14 @@ function reducer(state, action) {
       };
 
     case 'NEW_ANSWER':
-      return {
-        ...state,
-        answers: [...state.answers, action.payload],
-      };
+      return { ...state, answers: [...state.answers, action.payload] };
 
     case 'ANSWER_COUNT_UPDATE':
       return {
         ...state,
         answerCount: action.payload.count,
         answerTotal: action.payload.total,
+        liveCorrectPlayers: action.payload.correctPlayers || state.liveCorrectPlayers,
       };
 
     case 'ANSWERS_CLOSED':
@@ -149,32 +161,22 @@ function reducer(state, action) {
       };
 
     case 'SCORES_REVEALED':
-      return {
-        ...state,
-        status: 'showing_scores',
-        rankings: action.payload.rankings || [],
-      };
+      return { ...state, status: 'showing_scores', rankings: action.payload.rankings || [] };
 
     case 'SCORES_UPDATE':
-      return {
-        ...state,
-        rankings: action.payload.rankings || [],
-      };
+      return { ...state, rankings: action.payload.rankings || [] };
 
     case 'PLAYER_JOINED': {
       const exists = state.players.find((p) => p.playerId === action.payload.playerId);
       if (exists) return state;
       return {
         ...state,
-        players: [
-          ...state.players,
-          {
-            playerId: action.payload.playerId,
-            name: action.payload.name,
-            totalScore: 0,
-            correctCount: 0,
-          },
-        ],
+        players: [...state.players, {
+          playerId: action.payload.playerId,
+          name: action.payload.name,
+          totalScore: 0,
+          correctCount: 0,
+        }],
       };
     }
 
@@ -182,28 +184,42 @@ function reducer(state, action) {
       return {
         ...state,
         quizzes: action.payload.quizzes || [],
+        status: 'accepting',
+        totalQuizCount: (action.payload.quizzes || []).length,
       };
 
     case 'GAME_STATE_UPDATE':
       return {
         ...state,
         status: action.payload.status,
-        currentQuiz: action.payload.status === 'waiting' ? null : state.currentQuiz,
+        totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
+        currentQuiz: action.payload.status === 'init' || action.payload.status === 'accepting'
+          ? null : state.currentQuiz,
       };
 
     case 'STATE_SYNC': {
-      const newState = { ...state, status: action.payload.status };
-      if (action.payload.question) {
-        newState.currentQuiz = action.payload.question;
-      }
-      if (action.payload.myAnswer) {
-        newState.myAnswer = action.payload.myAnswer;
-      }
-      if (action.payload.rankings) {
-        newState.rankings = action.payload.rankings;
-      }
-      return newState;
+      const ns = {
+        ...state,
+        status: action.payload.status,
+        questionHistory: action.payload.questionHistory || state.questionHistory,
+        totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
+      };
+      if (action.payload.question) ns.currentQuiz = action.payload.question;
+      if (action.payload.myAnswer) ns.myAnswer = action.payload.myAnswer;
+      if (action.payload.rankings) ns.rankings = action.payload.rankings;
+      if (action.payload.answers) ns.answers = action.payload.answers;
+      if (action.payload.players) ns.players = action.payload.players;
+      return ns;
     }
+
+    case 'FULL_RESET':
+      // Clear everything including player identity — forces re-login
+      return {
+        ...initialState,
+        connected: state.connected,
+        role: state.role,
+        authed: state.authed,
+      };
 
     case 'RESET':
       return { ...initialState };
@@ -228,9 +244,6 @@ export function useGame() {
   return ctx;
 }
 
-/**
- * Maps incoming WebSocket event names to dispatch actions.
- */
 export function useMessageHandler() {
   const { dispatch } = useGame();
 
@@ -254,6 +267,7 @@ export function useMessageHandler() {
         quizzes_loaded: 'QUIZZES_LOADED',
         game_state_update: 'GAME_STATE_UPDATE',
         state_sync: 'STATE_SYNC',
+        full_reset: 'FULL_RESET',
       };
 
       const type = map[msg.event];
@@ -261,11 +275,7 @@ export function useMessageHandler() {
         dispatch({ type, payload: msg });
       } else if (msg.event === 'error') {
         console.error('[Server Error]', msg.message);
-        // Auth-related errors (password mismatch, invalid role)
-        if (
-          msg.message?.includes('パスワード') ||
-          msg.message?.includes('ロール')
-        ) {
+        if (msg.message?.includes('パスワード') || msg.message?.includes('ロール')) {
           dispatch({ type: 'AUTH_ERROR', payload: msg.message });
         } else {
           dispatch({ type: 'SET_ERROR', payload: msg.message });

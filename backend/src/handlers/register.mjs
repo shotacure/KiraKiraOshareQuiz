@@ -1,4 +1,4 @@
-import { putConnection, putPlayer, getPlayer, getGameState, getAllPlayers } from '../lib/db.mjs';
+import { putConnection, putPlayer, getPlayer, getPlayerByName, getGameState, getAllPlayers } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRoles } from '../lib/broadcast.mjs';
 import { randomUUID } from 'crypto';
 
@@ -13,6 +13,7 @@ export async function handleRegister(connectionId, body) {
     return { statusCode: 400, body: 'Name required' };
   }
 
+  const trimmedName = name.trim();
   let playerId = existingPlayerId;
   let player = null;
 
@@ -22,16 +23,36 @@ export async function handleRegister(connectionId, body) {
   }
 
   if (player) {
-    // Reconnecting — update connectionId
+    // Reconnecting - update connectionId
     player.connectionId = connectionId;
-    player.name = name.trim(); // Allow name update on reconnect
+    // Allow name change only if not taken by someone else
+    if (trimmedName !== player.name) {
+      const existing = await getPlayerByName(trimmedName);
+      if (existing && existing.playerId !== playerId) {
+        await sendToConnection(connectionId, {
+          event: 'error',
+          message: `"${trimmedName}" は既に使われています。別の名前を入力してください`,
+        });
+        return { statusCode: 400, body: 'Name taken' };
+      }
+      player.name = trimmedName;
+    }
     await putPlayer(player);
   } else {
-    // New player
+    // New player - check for duplicate name
+    const existing = await getPlayerByName(trimmedName);
+    if (existing) {
+      await sendToConnection(connectionId, {
+        event: 'error',
+        message: `"${trimmedName}" は既に使われています。別の名前を入力してください`,
+      });
+      return { statusCode: 400, body: 'Name taken' };
+    }
+
     playerId = randomUUID();
     player = {
       playerId,
-      name: name.trim(),
+      name: trimmedName,
       registeredAt: new Date().toISOString(),
       connectionId,
       totalScore: 0,

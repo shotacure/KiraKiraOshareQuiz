@@ -1,0 +1,28 @@
+// Frontend configuration
+// -----------------------------------------------
+// 1. Copy this file: cp config.js.example config.js
+// 2. Edit config.js with your actual values
+// 3. config.js is gitignored - secrets are never committed
+
+export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+
+export const PLAYER_ID_KEY = 'quiz_player_id';
+export const PLAYER_NAME_KEY = 'quiz_player_name';
+export const ADMIN_SECRET_KEY = 'quiz_admin_secret';
+export const DISPLAY_SECRET_KEY = 'quiz_display_secret';
+
+// Route paths (change these to your own obscure paths)
+export const ROUTES = {
+  PLAYER: '/',
+  ADMIN: '/control',
+  DISPLAY: '/screen',
+};
+
+export const STATUS = {
+  INIT: 'init',
+  ACCEPTING: 'accepting',
+  ANSWERING: 'answering',
+  JUDGING: 'judging',
+  SHOWING_ANSWER: 'showing_answer',
+  SHOWING_SCORES: 'showing_scores',
+};
