@@ -13,6 +13,17 @@ export async function handleRegister(connectionId, body) {
     return { statusCode: 400, body: 'Name required' };
   }
 
+  // Reject registration when game is in init state (before quiz data loaded)
+  const gameState = await getGameState();
+  if (gameState.status === 'init') {
+    await sendToConnection(connectionId, {
+      event: 'registration_rejected',
+      reason: 'not_accepting',
+      message: 'まだ参加を受け付けていません',
+    });
+    return { statusCode: 400, body: 'Not accepting registrations yet' };
+  }
+
   const trimmedName = name.trim();
   let playerId = existingPlayerId;
   let player = null;
@@ -70,7 +81,6 @@ export async function handleRegister(connectionId, body) {
   });
 
   // Send registration confirmation with current game state
-  const gameState = await getGameState();
   await sendToConnection(connectionId, {
     event: 'registered',
     playerId,

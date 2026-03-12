@@ -7,7 +7,6 @@ import {
   getQuiz,
   getAnswersForQuiz,
   getAllPlayers,
-  updateAnswerJudgment,
   putPlayer,
 } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
@@ -66,7 +65,7 @@ export async function handleSubmitAnswer(connectionId, body) {
     ? new Date(now).getTime() - new Date(gameState.questionStartedAt).getTime()
     : null;
 
-  // Build answer record
+  // Build answer record — no auto-judging, isCorrect stays null
   const answer = {
     quizId,
     playerId: conn.playerId,
@@ -84,35 +83,12 @@ export async function handleSubmitAnswer(connectionId, body) {
   }
 
   // Auto-judge on submission
-  let autoCorrect = null;
-  if (quiz.questionType === 'choice') {
-    autoCorrect = choiceIndex === quiz.correctChoiceIndex;
-  } else if (quiz.acceptableAnswers?.length > 0) {
-    const normalized = answer.answerText.toLowerCase();
-    autoCorrect = quiz.acceptableAnswers.some(
-      (acc) => acc.toLowerCase() === normalized
-    );
-  } else if (quiz.modelAnswer) {
-    autoCorrect = answer.answerText.toLowerCase() === quiz.modelAnswer.toLowerCase();
-  }
-
-  if (autoCorrect !== null) {
-    answer.isCorrect = autoCorrect;
-    answer.pointsAwarded = autoCorrect ? (quiz.points || 10) : 0;
-  }
-
   await putAnswer(answer);
 
   // Update player score immediately if auto-judged correct
-  if (autoCorrect === true) {
-    player.totalScore = (player.totalScore || 0) + answer.pointsAwarded;
-    player.correctCount = (player.correctCount || 0) + 1;
-    player.answerCount = (player.answerCount || 0) + 1;
-    await putPlayer(player);
-  } else {
-    player.answerCount = (player.answerCount || 0) + 1;
-    await putPlayer(player);
-  }
+  // Increment answer count
+  player.answerCount = (player.answerCount || 0) + 1;
+  await putPlayer(player);
 
   // Confirm to player
   await sendToConnection(connectionId, {
@@ -121,7 +97,7 @@ export async function handleSubmitAnswer(connectionId, body) {
     answeredAt: now,
   });
 
-  // Notify admin with full answer details
+  // Notify admin
   await broadcastToRole('admin', {
     event: 'new_answer',
     playerId: conn.playerId,
@@ -130,29 +106,16 @@ export async function handleSubmitAnswer(connectionId, body) {
     choiceIndex: answer.choiceIndex,
     answeredAt: now,
     elapsedMs,
-    isCorrect: answer.isCorrect,
+    isCorrect: null,
   });
 
-  // Notify display with answer count + correct players
+  // Notify display with answer count only (no correct players — judging is manual)
   const allAnswers = await getAnswersForQuiz(quizId);
   const allPlayers = await getAllPlayers();
-  const correctPlayers = allAnswers
-    .filter((a) => a.isCorrect === true)
-    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt))
-    .map((a, i) => ({
-      rank: i + 1,
-      playerId: a.playerId,
-      playerName: a.playerName,
-      elapsedMs: gameState.questionStartedAt
-        ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
-        : null,
-    }));
-
   await broadcastToRole('display', {
     event: 'answer_count_update',
     count: allAnswers.length,
     total: allPlayers.length,
-    correctPlayers,
   });
 
   return { statusCode: 200, body: 'Answer submitted' };
