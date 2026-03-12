@@ -1,115 +1,194 @@
 # Kira-Kira OshareQuiz 🎯
 
-イベント向けリアルタイムクイズ大会運営Webアプリのバックエンドです。
+イベント向けリアルタイムクイズ大会運営 Web アプリです。  
+WebSocket による即時同期で、解答者（スマホ）・管理者（PC）・プロジェクタ表示の3画面を連携させ、クイズ大会をスムーズに運営できます。
 
-## 概要
+## デモイメージ
 
-WebSocket によるリアルタイム通信で、解答者（スマホ）・管理者（PC）・プロジェクタ表示の3画面を連携させ、クイズ大会をスムーズに運営できます。
+| 解答者 (スマホ) | 管理者 (PC) | プロジェクタ表示 |
+|:---:|:---:|:---:|
+| 名前入力→回答→結果 | 進行制御・判定・成績 | 問題・正解・ランキング |
 
-### 特徴
+## 特徴
 
-- **リアルタイム通信**: WebSocket による即座の状態同期
-- **3つの画面**: 解答者 / 管理者 / プロジェクタ表示
-- **低コスト**: AWS サーバーレス構成で数時間のイベントなら100円未満
-- **簡単セットアップ**: SAM CLI で一発デプロイ
+- **リアルタイム**: WebSocket で全画面が即座に同期
+- **3画面連携**: 解答者 / 管理者 / 表示用が独立して動作
+- **低コスト**: AWS サーバーレスで数時間のイベントなら **100円未満**
+- **簡単セットアップ**: SAM CLI 一発でインフラ構築、Vite で即座にフロント開発
 
 ## アーキテクチャ
 
 ```
-S3 + CloudFront (フロントエンド)
-        │
-API Gateway WebSocket API
-        │
-    Lambda (Node.js 20.x)
-        │
-    DynamoDB (2テーブル)
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│  解答者   │  │  管理者   │  │ プロジェクタ│
+│ (スマホ)  │  │  (PC)    │  │   (PC)    │
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     └──────┬──────┴──────┬──────┘
+            │             │
+     S3 + CloudFront    API Gateway
+     (React SPA)        (WebSocket)
+                          │
+                       Lambda
+                     (Node.js 20)
+                          │
+                       DynamoDB
+```
+
+## リポジトリ構成
+
+```
+KiraKiraOshareQuiz/
+├── backend/                   # AWS SAM バックエンド
+│   ├── template.yaml          #   インフラ定義 (API GW + Lambda + DynamoDB)
+│   ├── samconfig.toml.example #   デプロイ設定テンプレート
+│   ├── src/                   #   Lambda ソースコード
+│   │   ├── index.mjs          #     ルーター
+│   │   ├── handlers/          #     各アクションのハンドラー (13個)
+│   │   └── lib/               #     DB操作・WebSocket配信ユーティリティ
+│   ├── sample-data/           #   サンプルクイズデータ
+│   ├── scripts/               #   CLIツール
+│   └── tests/                 #   テストイベント
+│
+├── frontend/                  # React フロントエンド
+│   ├── src/
+│   │   ├── App.jsx            #   ルーティング定義
+│   │   ├── hooks/             #   WebSocket接続管理
+│   │   ├── contexts/          #   ゲーム状態管理
+│   │   ├── components/        #   共通UIコンポーネント
+│   │   └── pages/             #   3画面 (player / admin / display)
+│   ├── .env.example           #   環境変数テンプレート
+│   └── deploy.sh              #   S3デプロイスクリプト
+│
+├── LICENSE                    # MIT License
+└── README.md                  # このファイル
 ```
 
 ## 前提条件
 
-- **AWS CLI v2** がインストール・設定済み
-- **AWS SAM CLI** がインストール済み
-- **Node.js 20.x** 以上
-- **Git**
+- [AWS CLI v2](https://aws.amazon.com/cli/) — インストール & `aws configure` 済み
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- [Node.js 20+](https://nodejs.org/)
+- Git
 
-### インストール手順（Windows / Visual Studio 環境）
+## クイックスタート
 
-1. **AWS CLI**: https://aws.amazon.com/cli/ からインストーラをダウンロード
-2. **SAM CLI**: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html
-3. **Node.js**: https://nodejs.org/ から LTS 版をインストール
-
-```powershell
-# AWS CLI の設定（初回のみ）
-aws configure
-# → Access Key, Secret Key, Region (ap-northeast-1), Output format (json) を入力
-```
-
-## セットアップ
-
-### 1. リポジトリのクローン
+### 1. クローン
 
 ```powershell
 git clone https://github.com/shotacure/KiraKiraOshareQuiz.git
 cd KiraKiraOshareQuiz
 ```
 
-### 2. 依存関係のインストール
+### 2. バックエンドのデプロイ
 
 ```powershell
-cd src
-npm install
-cd ..
-```
+cd backend
 
-### 3. 設定ファイルの作成
+# 依存関係インストール
+cd src && npm install && cd ..
 
-テンプレートからデプロイ設定ファイルをコピーし、パスワードを設定します:
-
-```powershell
+# デプロイ設定を作成
 cp samconfig.toml.example samconfig.toml
-```
+# samconfig.toml を開いて AdminSecret を変更
 
-`samconfig.toml` を開き、`AdminSecret` を変更してください:
-
-```toml
-parameter_overrides = "Stage=prod AdminSecret=あなたの管理者パスワード"
-```
-
-> ⚠️ `samconfig.toml` は `.gitignore` に含まれており、Git にコミットされません。秘密情報の漏洩を防ぐため、**絶対に `.gitignore` から除外しないでください**。
-
-## デプロイ
-
-### ビルド & デプロイ
-
-```powershell
-# ビルド
+# ビルド & デプロイ
 sam build
-
-# デプロイ（初回は --guided を追加すると対話形式で設定可能）
 sam deploy
-
-# 初回のみ対話形式でデプロイする場合:
-sam deploy --guided
 ```
 
-デプロイ完了後、出力に **WebSocket API の URL** が表示されます:
+デプロイ完了後に **WebSocket URL** が表示されます:
 
 ```
 WebSocketApiUrl = wss://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod
 ```
 
-この URL をフロントエンドの設定に使用します。
-
-### デプロイの確認
+### 3. クイズデータの投入
 
 ```powershell
-# スタックの出力を確認
-aws cloudformation describe-stacks --stack-name quiz-app --query "Stacks[0].Outputs"
+# ルートに戻る
+cd ..
+
+# ローダースクリプトの依存関係
+cd backend && npm install --prefix .. ws && cd ..
+
+# サンプルデータを投入
+node backend/scripts/load-quizzes.mjs \
+  wss://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod \
+  あなたのAdminSecret \
+  backend/sample-data/quizzes.json
+```
+
+### 4. フロントエンドの起動
+
+```powershell
+cd frontend
+
+# 依存関係インストール
+npm install
+
+# 環境変数を設定
+cp .env.example .env.local
+# .env.local を開いて VITE_WS_URL にバックエンドの WebSocket URL を設定
+
+# 開発サーバー起動
+npm run dev
+```
+
+ブラウザで http://localhost:5173 が開きます。
+
+### 5. フロントエンドのデプロイ (S3 + CloudFront)
+
+```powershell
+cd frontend
+
+# ビルド
+npm run build
+
+# S3にアップロード
+aws s3 sync dist/ s3://your-bucket-name --delete
+
+# CloudFront キャッシュ無効化
+aws cloudfront create-invalidation --distribution-id YOUR_DIST_ID --paths "/*"
+```
+
+> **CloudFront の設定**: SPA のため、カスタムエラーレスポンスで 403/404 → `/index.html` (200) を返すように設定してください。
+
+## 使い方
+
+### イベント前日
+
+1. バックエンドをデプロイ
+2. クイズデータ (JSON) を作成して投入
+3. フロントエンドをビルド & S3にデプロイ
+4. 動作確認（管理者画面から一通り操作テスト）
+
+### イベント当日
+
+1. プロジェクタ PC で `/display` を開いてフルスクリーン
+2. 運営 PC で `/admin` を開いてログイン
+3. 参加者に URL を案内し、スマホで `/player` にアクセスしてもらう
+
+### クイズ進行の流れ
+
+```
+[管理者] 問題を選択 → [出題] ボタン
+         ↓
+全画面が出題モードに遷移、解答者が回答を入力
+         ↓
+[管理者] [回答締切] ボタン（任意、正解発表で自動締切も可）
+         ↓
+[管理者] 回答一覧で ○× を判定 or [自動判定] ボタン
+         ↓
+[管理者] [正解発表] ボタン → プロジェクタに正解と正解者一覧が表示
+         ↓
+[管理者] [成績発表] ボタン → プロジェクタにランキング表示
+         ↓
+[管理者] 次の問題を選択して [出題] → 繰り返し
 ```
 
 ## クイズデータの形式
 
-`sample-data/quizzes.json` を参考に、以下の形式で作成します:
+`backend/sample-data/quizzes.json` を参照してください。テキスト回答問題と選択肢問題の両方に対応しています。
 
 ```json
 {
@@ -125,115 +204,14 @@ aws cloudformation describe-stacks --stack-name quiz-app --query "Stacks[0].Outp
       "acceptableAnswers": ["富士山", "ふじさん"],
       "points": 10,
       "order": 1
-    },
-    {
-      "quizId": "c1-q2",
-      "cornerNumber": 1,
-      "cornerTitle": "一般常識クイズ",
-      "questionNumber": 2,
-      "questionText": "東京タワーの高さは？",
-      "questionType": "choice",
-      "choices": ["233m", "333m", "433m", "533m"],
-      "correctChoiceIndex": 1,
-      "points": 10,
-      "order": 2
     }
   ]
 }
 ```
 
-### フィールド説明
+## コスト (50人参加・30問・3時間)
 
-| フィールド | 必須 | 説明 |
-|---|---|---|
-| `quizId` | ○ | 一意の問題ID（例: `c1-q1`） |
-| `cornerNumber` | | コーナー番号 |
-| `cornerTitle` | | コーナータイトル |
-| `questionNumber` | | コーナー内の問題番号 |
-| `questionText` | ○ | 問題文 |
-| `questionType` | ○ | `"text"` または `"choice"` |
-| `modelAnswer` | △ | テキスト問題の模範解答 |
-| `acceptableAnswers` | | 正解として許容する別表記の配列 |
-| `choices` | △ | 選択肢問題の選択肢配列 |
-| `correctChoiceIndex` | △ | 正解の選択肢インデックス（0始まり） |
-| `points` | | 獲得点数（デフォルト: 10） |
-| `order` | | 出題順（ソート用） |
-
-## WebSocket API リファレンス
-
-### クライアント → サーバー
-
-接続後、JSON メッセージの `action` フィールドでルーティングされます。
-
-| action | 送信元 | 主なパラメータ |
-|---|---|---|
-| `register` | 解答者 | `name`, `playerId?` |
-| `connect_role` | 管理者/表示 | `role`, `secret` |
-| `submit_answer` | 解答者 | `quizId`, `answerText?`, `choiceIndex?` |
-| `start_question` | 管理者 | `quizId` |
-| `close_answers` | 管理者 | — |
-| `judge` | 管理者 | `quizId`, `playerId`, `isCorrect` |
-| `judge_bulk` | 管理者 | `quizId`, `judgments[]` |
-| `reveal_answer` | 管理者 | — |
-| `show_scores` | 管理者 | — |
-| `reset_to_waiting` | 管理者 | — |
-| `load_quizzes` | 管理者 | `quizzes[]` |
-| `get_state` | 全員 | — |
-
-### サーバー → クライアント（主なイベント）
-
-| event | 配信先 | 説明 |
-|---|---|---|
-| `registered` | 解答者 | 登録完了・playerId発行 |
-| `full_state` | 管理者/表示 | 接続時のフルステート |
-| `question_started` | 全員 | 出題開始 |
-| `answer_submitted` | 解答者 | 回答受付確認 |
-| `new_answer` | 管理者 | 新しい回答の通知 |
-| `answer_count_update` | 表示 | 回答済み人数 |
-| `answers_closed` | 全員 | 回答締切 |
-| `judgment_result` | 解答者 | 正誤結果 |
-| `answer_revealed` | 全員 | 正解発表 |
-| `scores_revealed` | 全員 | 成績発表 |
-| `game_state_update` | 全員 | 状態遷移通知 |
-
-## プロジェクト構成
-
-```
-KiraKiraOshareQuiz/
-├── template.yaml          # SAM テンプレート（インフラ定義）
-├── samconfig.toml.example # SAM デプロイ設定（テンプレート）
-├── src/
-│   ├── package.json
-│   ├── index.mjs          # Lambda エントリポイント（ルーター）
-│   ├── handlers/
-│   │   ├── connect.mjs        # WebSocket $connect
-│   │   ├── disconnect.mjs     # WebSocket $disconnect
-│   │   ├── register.mjs       # 解答者登録
-│   │   ├── connectRole.mjs    # 管理者/表示ログイン
-│   │   ├── submitAnswer.mjs   # 回答送信
-│   │   ├── startQuestion.mjs  # 出題開始
-│   │   ├── closeAnswers.mjs   # 回答締切
-│   │   ├── judge.mjs          # 個別正誤判定
-│   │   ├── judgeBulk.mjs      # 一括正誤判定
-│   │   ├── revealAnswer.mjs   # 正解発表
-│   │   ├── showScores.mjs     # 成績発表
-│   │   ├── resetToWaiting.mjs # 待機状態に戻す
-│   │   ├── loadQuizzes.mjs    # クイズデータ投入
-│   │   └── getState.mjs       # 状態取得（再接続用）
-│   └── lib/
-│       ├── db.mjs             # DynamoDB 操作
-│       └── broadcast.mjs      # WebSocket 配信
-├── sample-data/
-│   └── quizzes.json       # サンプルクイズデータ
-├── LICENSE
-└── README.md
-```
-
-## 運用コスト
-
-50人参加・30問・3時間のイベントを想定した場合:
-
-| リソース | 概算コスト |
+| リソース | 概算 |
 |---|---|
 | API Gateway WebSocket | ~10円 |
 | Lambda | 無料枠内 |
@@ -243,32 +221,25 @@ KiraKiraOshareQuiz/
 
 ## クリーンアップ
 
-イベント終了後、不要であればリソースを削除できます:
-
 ```powershell
+# バックエンド削除
+cd backend
 sam delete --stack-name quiz-app
+
+# S3バケット内のファイルを削除（必要に応じて）
+aws s3 rm s3://your-bucket-name --recursive
 ```
 
-## ローカル開発（オプション）
+## セキュリティに関する注意
 
-SAM CLI でローカルテストも可能です:
+- `backend/samconfig.toml` は AdminSecret を含むため **`.gitignore` に入っています**。リポジトリにはテンプレート (`samconfig.toml.example`) のみコミットされます。
+- `frontend/.env.local` も同様に `.gitignore` 対象です。テンプレートは `.env.example` です。
+- **これらのファイルを絶対に Git にコミットしないでください。**
 
-```powershell
-# Lambda をローカルで起動（HTTP のみ、WebSocket は非対応）
-sam local start-api
+## 詳細ドキュメント
 
-# 個別の Lambda 関数をテスト
-sam local invoke QuizHandlerFunction -e tests/events/connect.json
-```
-
-> ⚠️ WebSocket API のローカルテストは SAM CLI では直接サポートされていないため、
-> `wscat` 等のツールでデプロイ済みの API に接続してテストすることを推奨します。
-
-```powershell
-# wscat でテスト接続
-npx wscat -c wss://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod
-> {"action": "register", "name": "テスト太郎"}
-```
+- バックエンド API リファレンス → [`backend/README.md`](./backend/README.md)
+- フロントエンド開発ガイド → [`frontend/README.md`](./frontend/README.md)
 
 ## ライセンス
 

@@ -1,0 +1,13 @@
+{
+  "name": "quiz-app-handler",
+  "version": "1.0.0",
+  "description": "Kira-Kira OshareQuiz - Lambda WebSocket handler",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.600.0"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,19 @@
+# samconfig.toml - SAM CLI deployment configuration
+# -----------------------------------------------
+# 1. Copy this file: cp samconfig.toml.example samconfig.toml
+# 2. Edit samconfig.toml with your actual values
+# 3. samconfig.toml is gitignored - secrets are never committed
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "quiz-app"
+resolve_s3 = true
+s3_prefix = "quiz-app"
+region = "ap-northeast-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = "Stage=prod AdminSecret=CHANGE_ME_BEFORE_DEPLOY"
+
+[default.build.parameters]
+use_container = false

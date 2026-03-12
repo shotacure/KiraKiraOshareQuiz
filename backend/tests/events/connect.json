@@ -1,0 +1,9 @@
+{
+  "requestContext": {
+    "routeKey": "$connect",
+    "connectionId": "test-conn-001",
+    "eventType": "CONNECT"
+  },
+  "headers": {},
+  "isBase64Encoded": false
+}
