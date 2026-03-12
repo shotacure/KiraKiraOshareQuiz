@@ -74,7 +74,7 @@ export async function handleGetState(connectionId) {
     }
   }
 
-  if (conn.role === 'display' || conn.role === 'admin') {
+  {
     const players = await getAllPlayers();
     payload.players = players.map((p, i) => ({
       rank: i + 1,
