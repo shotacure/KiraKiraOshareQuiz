@@ -1,0 +1,9 @@
+{
+  "requestContext": {
+    "routeKey": "$default",
+    "connectionId": "test-conn-001",
+    "eventType": "MESSAGE"
+  },
+  "body": "{\"action\": \"submit_answer\", \"quizId\": \"c1-q1\", \"answerText\": \"富士山\"}",
+  "isBase64Encoded": false
+}

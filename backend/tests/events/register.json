@@ -1,0 +1,9 @@
+{
+  "requestContext": {
+    "routeKey": "$default",
+    "connectionId": "test-conn-001",
+    "eventType": "MESSAGE"
+  },
+  "body": "{\"action\": \"register\", \"name\": \"テスト太郎\"}",
+  "isBase64Encoded": false
+}
