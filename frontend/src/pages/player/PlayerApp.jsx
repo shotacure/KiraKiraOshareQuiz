@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useGame, useMessageHandler } from '../../contexts/GameContext';
 import { useWebSocket } from '../../hooks/useWebSocket';
-import { PLAYER_ID_KEY, PLAYER_NAME_KEY } from '../../config';
+import { PLAYER_ID_KEY, PLAYER_NAME_KEY, SESSION_ID_KEY } from '../../config';
 import { t } from '../../i18n';
 
 export default function PlayerApp() {
@@ -23,7 +23,7 @@ export default function PlayerApp() {
     send({ action: 'get_state' });
   }, [connected]);
 
-  // Detect actual server response (status change beyond initial default)
+  // Detect actual server response
   const statusChangeCount = useRef(0);
   useEffect(() => {
     statusChangeCount.current += 1;
@@ -38,9 +38,7 @@ export default function PlayerApp() {
   useEffect(() => {
     if (phase !== 'loading') return;
     if (!serverResponded.current) return;
-
     if (state.status === 'init') { setPhase('ready'); return; }
-
     if (connected && !recoveryDone.current) {
       const savedId = localStorage.getItem(PLAYER_ID_KEY);
       const savedName = localStorage.getItem(PLAYER_NAME_KEY);
@@ -54,20 +52,43 @@ export default function PlayerApp() {
     }
   }, [state.status, connected, phase]);
 
-  // Phase 3: registration succeeded
+  // Phase 3: registration succeeded — persist identity and sync full state
   useEffect(() => {
     if (state.playerId) {
       localStorage.setItem(PLAYER_ID_KEY, state.playerId);
       if (state.playerName) localStorage.setItem(PLAYER_NAME_KEY, state.playerName);
+      if (state.sessionId) localStorage.setItem(SESSION_ID_KEY, state.sessionId);
       if (phase !== 'ready') setPhase('ready');
+      // Sync players list for rank display (registered doesn't include players)
+      if (connected) send({ action: 'get_state' });
     }
   }, [state.playerId]);
+
+  // Session mismatch detection: if server sessionId differs from stored one,
+  // this is a different quiz session — force logout and re-fetch current state
+  useEffect(() => {
+    if (!state.sessionId) return; // null = no active session (init/reset)
+    const savedSession = localStorage.getItem(SESSION_ID_KEY);
+    if (savedSession && savedSession !== state.sessionId) {
+      // Different quiz session — clear stale player data
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.removeItem(PLAYER_NAME_KEY);
+      localStorage.removeItem(SESSION_ID_KEY);
+      dispatch({ type: 'RESET' });
+      recoveryDone.current = false;
+      pendingReconnect.current = false;
+      setPhase('ready');
+      // RESET sets status='init', but server may be in 'accepting' — re-fetch
+      if (connected) send({ action: 'get_state' });
+    }
+  }, [state.sessionId]);
 
   // Registration rejected
   useEffect(() => {
     if (state.registrationRejected) {
       localStorage.removeItem(PLAYER_ID_KEY);
       localStorage.removeItem(PLAYER_NAME_KEY);
+      localStorage.removeItem(SESSION_ID_KEY);
       recoveryDone.current = false;
       setPhase('ready');
     }
@@ -81,25 +102,62 @@ export default function PlayerApp() {
     }
   }, [phase]);
 
-  // Full reset
+  // Full reset — clear player identity completely (including sessionId)
   const prevStatus = useRef(state.status);
   useEffect(() => {
     if (state.status === 'init' && !state.playerId && prevStatus.current !== 'init' && serverResponded.current) {
       localStorage.removeItem(PLAYER_ID_KEY);
       localStorage.removeItem(PLAYER_NAME_KEY);
+      localStorage.removeItem(SESSION_ID_KEY);
       recoveryDone.current = false;
       setPhase('ready');
     }
     prevStatus.current = state.status;
   }, [state.status, state.playerId]);
 
-  // WS reconnect (not F5)
+  // WS reconnect (connection drop, not F5)
+  // Don't send register immediately — wait for get_state response to verify sessionId first.
+  // Phase 1 already sends get_state on every connect.
+  const pendingReconnect = useRef(false);
   useEffect(() => {
     if (connected && state.playerId && state.playerName && phase === 'ready') {
-      send({ action: 'register', name: state.playerName, playerId: state.playerId });
-      setTimeout(() => send({ action: 'get_state' }), 300);
+      pendingReconnect.current = true;
+      // get_state is already sent by Phase 1 effect — wait for state_sync
     }
   }, [connected]);
+
+  // After state_sync arrives (syncCounter increments), complete reconnect if sessionId is still valid
+  useEffect(() => {
+    if (!pendingReconnect.current) return;
+    if (!serverResponded.current) return;
+    pendingReconnect.current = false;
+
+    // Check if session is still valid (compare localStorage, not state — RESET may not have applied yet)
+    const savedSession = localStorage.getItem(SESSION_ID_KEY);
+    if (state.sessionId && savedSession && savedSession !== state.sessionId) {
+      return; // Session mismatch — the sessionId effect will handle clearing
+    }
+
+    // Double-check: if session mismatch effect already cleared localStorage in this render cycle,
+    // state.playerId still has the old value (RESET hasn't applied yet).
+    // Use localStorage as the source of truth.
+    const savedId = localStorage.getItem(PLAYER_ID_KEY);
+    const savedName = localStorage.getItem(PLAYER_NAME_KEY);
+    if (savedId && savedName && connected) {
+      send({ action: 'register', name: savedName, playerId: savedId });
+    }
+  }, [state.syncCounter]); // syncCounter always increments on state_sync, even if status unchanged
+
+  // Visibility change: resync state when returning from phone lock/tab switch
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && connected && state.playerId) {
+        send({ action: 'get_state' });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [connected, state.playerId, send]);
 
   // ── Render ──
 
@@ -114,7 +172,6 @@ export default function PlayerApp() {
     );
   }
 
-  // Init: show preparing screen
   if (state.status === 'init' && !state.playerId) {
     return (
       <Shell>
@@ -131,7 +188,6 @@ export default function PlayerApp() {
     );
   }
 
-  // Not registered and registration is closed (past accepting)
   if (!state.playerId && state.status !== 'accepting') {
     return (
       <Shell>
@@ -148,10 +204,8 @@ export default function PlayerApp() {
     );
   }
 
-  // Not registered, accepting: show login
   if (!state.playerId) return <LoginScreen send={send} connected={connected} />;
 
-  // Registered: show game UI
   const { status } = state;
   const playerCount = state.players?.length || 0;
   const myRank = state.players
@@ -165,8 +219,8 @@ export default function PlayerApp() {
       <PlayerHeader name={state.playerName} score={state.totalScore} rank={myRank} total={playerCount} />
       {(status === 'init' || status === 'accepting' || status === 'waiting') && <WaitingScreen status={status} />}
       {status === 'answering' && !state.myAnswer && <AnswerScreen quiz={state.currentQuiz} send={send} />}
-      {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} />}
-      {status === 'judging' && <JudgingScreen answer={state.myAnswer} />}
+      {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} judgment={state.myJudgment} />}
+      {status === 'judging' && <JudgingScreen answer={state.myAnswer} judgment={state.myJudgment} />}
       {status === 'showing_answer' && (
         <ResultScreen myAnswer={state.myAnswer} judgment={state.myJudgment} revealData={state.revealData} score={state.totalScore} />
       )}
@@ -193,40 +247,43 @@ function Shell({ children }) {
   );
 }
 
+/* Connection dot - top-left to avoid overlap with header right side */
 function ConnDot({ connected }) {
   return (
-    <div className="fixed top-2 right-2 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/60 backdrop-blur-sm text-xs">
+    <div className="fixed top-2 left-2 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/60 backdrop-blur-sm text-xs">
       <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} />
       <span className="text-pink-400">{connected ? t('app.connecting') : t('app.reconnecting')}</span>
     </div>
   );
 }
 
+/* Header: name left, rank+score center, nothing right (ConnDot is fixed top-left) */
 function PlayerHeader({ name, score, rank, total }) {
   return (
-    <div className="flex items-center justify-between px-4 py-3 bg-white/50 backdrop-blur-sm border-b border-pink-100">
-      <span className="font-bold text-pink-600 truncate" style={{ maxWidth: '35%' }}>{name}</span>
-      <div className="text-center">
-        <span className="font-black text-yellow-500 text-lg">{t('player.header.pt', { score })}</span>
-      </div>
-      <span className="text-pink-400 text-sm font-bold">
-        {rank > 0 ? t('player.header.rank', { rank, total }) : ''}
-      </span>
+    <div className="flex items-center justify-center px-4 py-3 bg-white/50 backdrop-blur-sm border-b border-pink-100 gap-3">
+      <span className="font-bold text-pink-600 truncate" style={{ maxWidth: '30%' }}>{name}</span>
+      <span className="text-pink-200">|</span>
+      <span className="font-black text-yellow-500">{t('player.header.pt', { score })}</span>
+      {rank > 0 && (
+        <>
+          <span className="text-pink-200">|</span>
+          <span className="text-pink-400 text-sm font-bold">{t('player.header.rank', { rank, total })}</span>
+        </>
+      )}
     </div>
   );
 }
 
 function LoginScreen({ send, connected }) {
   const { dispatch, state } = useGame();
-  const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || '');
+  const [name, setName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [nameError, setNameError] = useState(null);
 
   const handleSubmit = () => {
     if (!name.trim() || !connected) return;
     setSubmitting(true); setNameError(null);
-    send({ action: 'register', name: name.trim(), playerId: localStorage.getItem(PLAYER_ID_KEY) });
-    localStorage.setItem(PLAYER_NAME_KEY, name.trim());
+    send({ action: 'register', name: name.trim() });
   };
 
   useEffect(() => {
@@ -335,7 +392,11 @@ function AnswerScreen({ quiz, send }) {
   );
 }
 
-function SubmittedScreen({ answer }) {
+/* Submitted: also show auto-judgment result for choice questions */
+function SubmittedScreen({ answer, judgment }) {
+  if (judgment) {
+    return <MiniResultScreen answer={answer} judgment={judgment} />;
+  }
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
       <div className="text-5xl mb-4">✅</div>
@@ -349,7 +410,32 @@ function SubmittedScreen({ answer }) {
   );
 }
 
-function JudgingScreen({ answer }) {
+/* Mini result shown immediately for auto-judged choice questions (during answering state) */
+function MiniResultScreen({ answer, judgment }) {
+  const isCorrect = judgment.isCorrect === true;
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
+      <div className="text-5xl mb-4">{isCorrect ? '🎉' : '😢'}</div>
+      <p className="font-black text-2xl mb-2">
+        {isCorrect ? <span className="text-green-500">{t('player.result.correct')}</span>
+          : <span className="text-red-400">{t('player.result.incorrect')}</span>}
+      </p>
+      {isCorrect && judgment.pointsAwarded > 0 && (
+        <p className="font-black text-xl text-yellow-500">{t('player.result.addPoints', { pts: judgment.pointsAwarded })}</p>
+      )}
+      <div className="bg-white/70 rounded-2xl border-2 border-pink-100 p-4 text-center mt-4">
+        <p className="text-pink-300 text-sm">{t('player.submitted.yourAnswer')}</p>
+        <p className="font-bold text-lg text-pink-600 mt-1">{answer.answerText}</p>
+      </div>
+      <p className="text-pink-300 text-sm mt-4">{t('player.submitted.waiting')}</p>
+    </div>
+  );
+}
+
+function JudgingScreen({ answer, judgment }) {
+  if (judgment) {
+    return <MiniResultScreen answer={answer} judgment={judgment} />;
+  }
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
       <div className="text-5xl mb-4 animate-pulse">🔍</div>
@@ -383,6 +469,9 @@ function ResultScreen({ myAnswer, judgment, revealData, score }) {
         <div className="bg-white/70 rounded-2xl border-2 border-pink-200 p-5 text-center mt-6 w-full max-w-sm">
           <p className="text-pink-300 text-sm">{t('player.result.correctIs')}</p>
           <p className="font-black text-2xl text-pink-600 mt-1">{revealData.correctAnswer}</p>
+          {revealData.acceptableAnswers && revealData.acceptableAnswers.length > 0 && (
+            <p className="text-pink-400 text-sm mt-1">({revealData.acceptableAnswers.join(', ')})</p>
+          )}
         </div>
       )}
       <div className="mt-6 px-4 py-2 rounded-xl bg-white/50 border border-pink-100">

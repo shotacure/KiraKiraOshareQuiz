@@ -8,7 +8,7 @@ import {
   putPlayer,
   getAnswersForQuiz,
 } from '../lib/db.mjs';
-import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
+import { sendToConnection, broadcastToRole, broadcastToAll } from '../lib/broadcast.mjs';
 
 /**
  * Logarithmic point calculation based on answer-speed rank.
@@ -47,18 +47,16 @@ export async function handleJudge(connectionId, body) {
   const basePoints = quiz.points || 10;
 
   if (isCorrect) {
-    // Mark correct temporarily to include in ranking calculation
-    await updateAnswerJudgment(quizId, playerId, true, 0);
-
-    // Calculate rank by answeredAt among ALL correct answers
+    // Count already-correct answers BEFORE marking this one
+    // (avoids GSI eventual consistency issues with read-after-write)
     const allAnswers = await getAnswersForQuiz(quizId);
-    const correctAnswers = allAnswers
-      .filter((a) => a.isCorrect === true)
-      .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
-    const rank = correctAnswers.findIndex((a) => a.playerId === playerId) + 1;
+    const alreadyCorrectCount = allAnswers.filter(
+      (a) => a.isCorrect === true && a.playerId !== playerId
+    ).length;
+    const rank = alreadyCorrectCount + 1;
     const pointsAwarded = calcPoints(basePoints, rank);
 
-    // Update with actual points
+    // Mark correct with calculated points in one write
     await updateAnswerJudgment(quizId, playerId, true, pointsAwarded);
 
     // Add points to player
@@ -100,7 +98,8 @@ export async function handleJudge(connectionId, body) {
       correctPlayers,
     });
 
-    await broadcastToRole('admin', {
+    // Notify all clients so player rankings update in real time
+    await broadcastToAll({
       event: 'judgment_updated',
       quizId,
       playerId,
@@ -124,7 +123,7 @@ export async function handleJudge(connectionId, body) {
       });
     }
 
-    await broadcastToRole('admin', {
+    await broadcastToAll({
       event: 'judgment_updated',
       quizId,
       playerId,

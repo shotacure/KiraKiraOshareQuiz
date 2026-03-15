@@ -33,6 +33,17 @@ export default function DisplayApp() {
     if (state.authError) setSubmitting(false);
   }, [state.authed, state.authError]);
 
+  // Visibility resync: re-fetch full state when returning from sleep/tab switch
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && connected && authedSecretRef.current) {
+        send({ action: 'connect_role', role: 'display', secret: authedSecretRef.current });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [connected, send]);
+
   const handleLogin = () => {
     if (!secret.trim() || submitting) return;
     dispatch({ type: 'CLEAR_ERROR' }); setSubmitting(true);
@@ -112,16 +123,17 @@ function PinkConfetti() {
 /* ── Accepting / QR with quiet zone ── */
 function AcceptingView({ players, status }) {
   const playerUrl = window.location.origin + '/';
-  // QR spec: quiet zone = 4 modules minimum. We embed it via padding around the image.
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(playerUrl)}&color=ff6b9d&bgcolor=FFFFFF&margin=4`;
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center">
-      <div className="text-center" style={{ marginBottom: '2vh' }}>
-        <p style={{ fontSize: '4vw', lineHeight: 1 }}>✨🎀✨</p>
-        <h1 className="font-black text-pink-500" style={{ fontSize: '4.5vw', textShadow: '2px 2px 10px rgba(255,107,157,0.3)', marginTop: '1vh' }}>
+      {/* Title with sparkle-hearts on both sides */}
+      <div className="flex items-center justify-center" style={{ marginBottom: '2vh', gap: '1.5vw' }}>
+        <span style={{ fontSize: '3.5vw' }}>✨💖</span>
+        <h1 className="font-black text-pink-500" style={{ fontSize: '4.5vw', textShadow: '2px 2px 10px rgba(255,107,157,0.3)' }}>
           {t('app.title')}
         </h1>
+        <span style={{ fontSize: '3.5vw' }}>💖✨</span>
       </div>
 
       {status === 'init' ? (
@@ -129,10 +141,10 @@ function AcceptingView({ players, status }) {
       ) : (
         <>
           <div className="bg-white/70 backdrop-blur-sm border-2 border-pink-200 shadow-xl shadow-pink-100"
-            style={{ borderRadius: '2vw', padding: '2.5vw', marginBottom: '2vh' }}>
+            style={{ borderRadius: '2vw', padding: '2vw 4vw', marginBottom: '2vh' }}>
             <p className="text-center text-pink-500 font-bold" style={{ fontSize: '1.8vw', marginBottom: '1.5vh' }}>{t('display.accepting.scan')}</p>
-            <div className="flex items-center" style={{ gap: '3vw' }}>
-              {/* QR with white quiet zone background */}
+            {/* QR and URL vertically stacked, centered */}
+            <div className="flex flex-col items-center">
               <div style={{
                 backgroundColor: '#FFFFFF',
                 padding: '1.5vw',
@@ -140,15 +152,13 @@ function AcceptingView({ players, status }) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                marginBottom: '1.5vh',
               }}>
-                <img src={qrUrl} alt="QR" style={{ width: '20vw', height: '20vw', display: 'block' }} crossOrigin="anonymous" />
+                <img src={qrUrl} alt="QR" style={{ width: '18vw', height: '18vw', display: 'block' }} crossOrigin="anonymous" />
               </div>
-              <div className="text-center" style={{ maxWidth: '25vw' }}>
-                <p className="text-pink-400" style={{ fontSize: '1.3vw', marginBottom: '0.5vh' }}>{t('display.accepting.url')}</p>
-                <p className="font-black text-pink-600" style={{ fontSize: '3vw', lineHeight: 1.2, wordBreak: 'break-all' }}>
-                  {playerUrl}
-                </p>
-              </div>
+              <p className="font-black text-pink-600 text-center" style={{ fontSize: '2.8vw', lineHeight: 1.2 }}>
+                {playerUrl}
+              </p>
             </div>
           </div>
 
@@ -231,6 +241,11 @@ function QuestionView({ quiz, answerCount, answerTotal, qIndex, qTotal, liveCorr
                   <span className="font-black text-yellow-500 shrink-0" style={{ fontSize: '1vw', marginLeft: '0.5vw' }}>
                     +{p.pointsAwarded}
                   </span>
+                  {p.elapsedMs != null && (
+                    <span className="font-mono text-pink-400 shrink-0" style={{ fontSize: '0.8vw', marginLeft: '0.5vw' }}>
+                      {formatElapsedMs(p.elapsedMs)}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -266,6 +281,11 @@ function JudgingView({ liveCorrectPlayers }) {
                   </span>
                   <span className="font-bold text-gray-700 truncate" style={{ fontSize: '1.2vw', flex: 1 }}>{p.playerName}</span>
                   <span className="font-black text-yellow-500 shrink-0" style={{ fontSize: '1vw', marginLeft: '0.5vw' }}>+{p.pointsAwarded}</span>
+                  {p.elapsedMs != null && (
+                    <span className="font-mono text-pink-400 shrink-0" style={{ fontSize: '0.8vw', marginLeft: '0.5vw' }}>
+                      {formatElapsedMs(p.elapsedMs)}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -278,7 +298,7 @@ function JudgingView({ liveCorrectPlayers }) {
 
 function RevealView({ revealData }) {
   if (!revealData) return null;
-  const { correctAnswer, correctPlayers, totalAnswers, correctCount, incorrectCount, points } = revealData;
+  const { correctAnswer, acceptableAnswers, correctPlayers, totalAnswers, correctCount, incorrectCount, points } = revealData;
   return (
     <div className="w-full h-full flex flex-col items-center justify-center overflow-auto" style={{ padding: '2vw' }}>
       {correctPlayers.length > 0 && <PinkConfetti />}
@@ -287,6 +307,9 @@ function RevealView({ revealData }) {
         <div className="inline-block bg-gradient-to-r from-pink-50 to-rose-50 border-pink-300 shadow-xl shadow-pink-100"
           style={{ padding: '1.5vw 4vw', borderRadius: '2vw', borderWidth: '3px', borderStyle: 'solid' }}>
           <p className="font-black text-pink-600" style={{ fontSize: '4vw' }}>{correctAnswer}</p>
+          {acceptableAnswers && acceptableAnswers.length > 0 && (
+            <p className="text-pink-400" style={{ fontSize: '2.8vw' }}>({acceptableAnswers.join(', ')})</p>
+          )}
         </div>
         <p className="font-bold text-pink-400" style={{ fontSize: '1.3vw', marginTop: '1vh' }}>+{points} pt ⭐</p>
       </div>

@@ -1,5 +1,6 @@
 import { getConnection, putQuizBatch, getAllQuizzes, updateGameState, getGameState } from '../lib/db.mjs';
 import { sendToConnection, broadcastToAll } from '../lib/broadcast.mjs';
+import { randomUUID } from 'crypto';
 
 export async function handleLoadQuizzes(connectionId, body) {
   const conn = await getConnection(connectionId);
@@ -57,9 +58,13 @@ export async function handleLoadQuizzes(connectionId, body) {
 
   await putQuizBatch(validated);
 
+  // Generate a unique session ID for this quiz session
+  const sessionId = randomUUID();
+
   await updateGameState({
     status: 'accepting',
     questionHistory: [],
+    sessionId,
   });
 
   const allQuizzes = await getAllQuizzes();
@@ -68,12 +73,15 @@ export async function handleLoadQuizzes(connectionId, body) {
     event: 'quizzes_loaded',
     count: validated.length,
     quizzes: allQuizzes,
+    sessionId,
   });
 
+  // Broadcast with sessionId so player clients can store it
   await broadcastToAll({
     event: 'game_state_update',
     status: 'accepting',
     totalQuizCount: allQuizzes.length,
+    sessionId,
   });
 
   return { statusCode: 200, body: `${validated.length} quizzes loaded` };

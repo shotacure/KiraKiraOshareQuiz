@@ -154,5 +154,7 @@ export default {
   'error.not_accepting_answers': '現在回答を受け付けていません',
   'error.quiz_id_mismatch': '問題IDが一致しません',
   'error.already_answered': 'すでに回答済みです',
+  'error.not_all_questions': 'まだ全問出題されていません',
+  'error.registration_closed': '参加受付は終了しました',
   'error.unknown': '不明なエラーが発生しました',
 };

@@ -9,11 +9,11 @@ export async function handleShowScores(connectionId) {
 
   const gameState = await getGameState();
 
-  // Only allow from showing_answer when all questions are done
   if (gameState.status !== 'showing_answer') {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: '正解発表後にのみ成績発表できます',
+      code: 'invalid_state',
+      message: 'invalid_state',
     });
     return { statusCode: 400, body: 'Invalid state' };
   }
@@ -23,7 +23,8 @@ export async function handleShowScores(connectionId) {
   if (history.length < allQuizzes.length) {
     await sendToConnection(connectionId, {
       event: 'error',
-      message: `まだ全問出題されていません (${history.length}/${allQuizzes.length})`,
+      code: 'not_all_questions',
+      message: 'not_all_questions',
     });
     return { statusCode: 400, body: 'Not all questions asked' };
   }

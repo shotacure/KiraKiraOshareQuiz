@@ -2,9 +2,12 @@
 // In .env.local:  VITE_WS_URL=wss://xxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod
 export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
-// Cookie/localStorage key for player ID persistence
+// localStorage keys for player identity
 export const PLAYER_ID_KEY = 'quiz_player_id';
 export const PLAYER_NAME_KEY = 'quiz_player_name';
+export const SESSION_ID_KEY = 'quiz_session_id';
+
+// sessionStorage keys for admin/display password persistence across F5
 export const ADMIN_SECRET_KEY = 'quiz_admin_secret';
 export const DISPLAY_SECRET_KEY = 'quiz_display_secret';
 
