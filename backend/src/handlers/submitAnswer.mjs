@@ -8,8 +8,19 @@ import {
   getAnswersForQuiz,
   getAllPlayers,
   putPlayer,
+  updateAnswerJudgment,
 } from '../lib/db.mjs';
-import { sendToConnection, broadcastToRole } from '../lib/broadcast.mjs';
+import { sendToConnection, broadcastToRole, broadcastToAll } from '../lib/broadcast.mjs';
+
+/**
+ * Logarithmic point calculation based on answer-speed rank.
+ */
+function calcPoints(basePoints, rank) {
+  if (rank <= 0) return basePoints;
+  if (rank === 1) return basePoints;
+  const pts = Math.round(basePoints * Math.log(2) / Math.log(rank + 1));
+  return Math.max(1, pts);
+}
 
 export async function handleSubmitAnswer(connectionId, body) {
   const { quizId, answerText, choiceIndex } = body;
@@ -85,23 +96,147 @@ export async function handleSubmitAnswer(connectionId, body) {
   player.answerCount = (player.answerCount || 0) + 1;
   await putPlayer(player);
 
-  await sendToConnection(connectionId, {
-    event: 'answer_submitted',
-    answerText: answer.answerText,
-    answeredAt: now,
-  });
+  // Auto-judge choice questions: calculate rank and points immediately.
+  // Uses count-before-mark approach: count existing correct answers BEFORE marking
+  // this one, avoiding GSI eventual consistency issues.
+  // Final safety net: recalculateCorrectPoints at reveal time.
+  let autoJudged = false;
+  if (quiz.questionType === 'choice' && quiz.correctChoiceIndex != null) {
+    const isCorrect = choiceIndex === quiz.correctChoiceIndex;
+    autoJudged = true;
+    const basePoints = quiz.points || 10;
 
-  await broadcastToRole('admin', {
-    event: 'new_answer',
-    playerId: conn.playerId,
-    playerName: player.name,
-    answerText: answer.answerText,
-    choiceIndex: answer.choiceIndex,
-    answeredAt: now,
-    elapsedMs,
-    isCorrect: null,
-  });
+    if (isCorrect) {
+      // Count already-correct answers BEFORE marking this one (safe from race conditions)
+      const allAnswers = await getAnswersForQuiz(quizId);
+      const alreadyCorrectCount = allAnswers.filter(
+        (a) => a.isCorrect === true && a.playerId !== conn.playerId
+      ).length;
+      const rank = alreadyCorrectCount + 1;
+      const pointsAwarded = calcPoints(basePoints, rank);
 
+      await updateAnswerJudgment(quizId, conn.playerId, true, pointsAwarded);
+
+      player.totalScore = (player.totalScore || 0) + pointsAwarded;
+      player.correctCount = (player.correctCount || 0) + 1;
+      await putPlayer(player);
+
+      await sendToConnection(connectionId, {
+        event: 'answer_submitted',
+        answerText: answer.answerText,
+        answeredAt: now,
+      });
+      await sendToConnection(connectionId, {
+        event: 'judgment_result',
+        quizId,
+        isCorrect: true,
+        pointsAwarded,
+        totalScore: player.totalScore,
+      });
+
+      await broadcastToRole('admin', {
+        event: 'new_answer',
+        playerId: conn.playerId,
+        playerName: player.name,
+        answerText: answer.answerText,
+        choiceIndex: answer.choiceIndex,
+        answeredAt: now,
+        elapsedMs,
+        isCorrect: true,
+        pointsAwarded,
+      });
+
+      await broadcastToAll({
+        event: 'judgment_updated',
+        quizId,
+        playerId: conn.playerId,
+        isCorrect: true,
+        pointsAwarded,
+        playerName: player.name,
+        totalScore: player.totalScore,
+      });
+
+      // Update display correct players
+      const updatedAnswers = await getAnswersForQuiz(quizId);
+      const correctPlayers = updatedAnswers
+        .filter((a) => a.isCorrect === true)
+        .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt))
+        .map((a, i) => ({
+          rank: i + 1,
+          playerId: a.playerId,
+          playerName: a.playerName,
+          pointsAwarded: a.pointsAwarded,
+          elapsedMs: gameState.questionStartedAt
+            ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
+            : null,
+        }));
+      await broadcastToRole('display', {
+        event: 'live_correct_update',
+        quizId,
+        correctPlayers,
+      });
+    } else {
+      // Incorrect choice — 0 points
+      await updateAnswerJudgment(quizId, conn.playerId, false, 0);
+
+      await sendToConnection(connectionId, {
+        event: 'answer_submitted',
+        answerText: answer.answerText,
+        answeredAt: now,
+      });
+      await sendToConnection(connectionId, {
+        event: 'judgment_result',
+        quizId,
+        isCorrect: false,
+        pointsAwarded: 0,
+        totalScore: player.totalScore,
+      });
+
+      await broadcastToRole('admin', {
+        event: 'new_answer',
+        playerId: conn.playerId,
+        playerName: player.name,
+        answerText: answer.answerText,
+        choiceIndex: answer.choiceIndex,
+        answeredAt: now,
+        elapsedMs,
+        isCorrect: false,
+        pointsAwarded: 0,
+      });
+
+      await broadcastToAll({
+        event: 'judgment_updated',
+        quizId,
+        playerId: conn.playerId,
+        isCorrect: false,
+        pointsAwarded: 0,
+        playerName: player.name,
+        totalScore: player.totalScore,
+      });
+    }
+  }
+
+  if (!autoJudged) {
+    // Text question: no auto-judging, manual ○× by admin
+    await sendToConnection(connectionId, {
+      event: 'answer_submitted',
+      answerText: answer.answerText,
+      answeredAt: now,
+    });
+
+    await broadcastToRole('admin', {
+      event: 'new_answer',
+      playerId: conn.playerId,
+      playerName: player.name,
+      answerText: answer.answerText,
+      choiceIndex: answer.choiceIndex,
+      answeredAt: now,
+      elapsedMs,
+      isCorrect: null,
+    });
+  }
+
+  // Update display answer count
   const allAnswers = await getAnswersForQuiz(quizId);
   const allPlayers = await getAllPlayers();
   await broadcastToRole('display', {

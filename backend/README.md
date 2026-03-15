@@ -1,275 +1,170 @@
-# Kira-Kira OshareQuiz 🎯
+# Kira-Kira OshareQuiz — Backend 🎯
 
-イベント向けリアルタイムクイズ大会運営Webアプリのバックエンドです。
+AWS SAM によるサーバーレスバックエンドです。API Gateway WebSocket + Lambda + DynamoDB で構成されています。
 
-## 概要
-
-WebSocket によるリアルタイム通信で、解答者（スマホ）・管理者（PC）・プロジェクタ表示の3画面を連携させ、クイズ大会をスムーズに運営できます。
-
-### 特徴
-
-- **リアルタイム通信**: WebSocket による即座の状態同期
-- **3つの画面**: 解答者 / 管理者 / プロジェクタ表示
-- **低コスト**: AWS サーバーレス構成で数時間のイベントなら100円未満
-- **簡単セットアップ**: SAM CLI で一発デプロイ
-
-## アーキテクチャ
+## 構成
 
 ```
-S3 + CloudFront (フロントエンド)
-        │
-API Gateway WebSocket API
-        │
-    Lambda (Node.js 20.x)
-        │
-    DynamoDB (2テーブル)
-```
-
-## 前提条件
-
-- **AWS CLI v2** がインストール・設定済み
-- **AWS SAM CLI** がインストール済み
-- **Node.js 20.x** 以上
-- **Git**
-
-### インストール手順（Windows / Visual Studio 環境）
-
-1. **AWS CLI**: https://aws.amazon.com/cli/ からインストーラをダウンロード
-2. **SAM CLI**: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html
-3. **Node.js**: https://nodejs.org/ から LTS 版をインストール
-
-```powershell
-# AWS CLI の設定（初回のみ）
-aws configure
-# → Access Key, Secret Key, Region (ap-northeast-1), Output format (json) を入力
+backend/
+├── template.yaml              # SAM テンプレート（インフラ定義）
+├── samconfig.toml.example     # デプロイ設定テンプレート
+├── package.json
+├── src/
+│   ├── package.json           # Lambda 依存関係
+│   ├── index.mjs              # WebSocket ルーター
+│   ├── handlers/              # アクションハンドラー
+│   │   ├── connect.mjs        # $connect — 接続時の初期化
+│   │   ├── disconnect.mjs     # $disconnect — 切断時のクリーンアップ
+│   │   ├── register.mjs       # register — プレイヤー登録・再接続
+│   │   ├── connectRole.mjs    # connect_role — 管理者/表示画面の認証
+│   │   ├── loadQuizzes.mjs    # load_quizzes — クイズ読込 + sessionId 生成
+│   │   ├── startQuestion.mjs  # start_question — 出題開始（参加受付終了）
+│   │   ├── submitAnswer.mjs   # submit_answer — 回答送信（選択問題は即時自動採点）
+│   │   ├── closeAnswers.mjs   # close_answers — 回答締切（全員採点済みなら即正解発表）
+│   │   ├── judge.mjs          # judge — テキスト問題の手動○×判定
+│   │   ├── revealAnswer.mjs   # reveal_answer — 正解発表（未採点を自動不正解処理）
+│   │   ├── showScores.mjs     # show_scores — 最終成績発表
+│   │   ├── resetAll.mjs       # reset_all — 全データリセット + sessionId クリア
+│   │   └── getState.mjs       # get_state — 現在状態取得（リロード復帰用）
+│   └── lib/
+│       ├── db.mjs             # DynamoDB 操作ユーティリティ
+│       └── broadcast.mjs      # WebSocket 配信ユーティリティ
+├── sample-data/
+│   └── quizzes.csv            # サンプルクイズデータ
+├── scripts/
+│   └── load-quizzes.mjs       # CLI からクイズを投入するスクリプト
+└── tests/
+    └── events/                # テスト用 Lambda イベント
 ```
 
 ## セットアップ
 
-### 1. リポジトリのクローン
+### 前提条件
+
+- AWS CLI v2（設定済み）
+- AWS SAM CLI
+- Node.js 20 以上
+
+### デプロイ手順
 
 ```powershell
-git clone https://github.com/shotacure/KiraKiraOshareQuiz.git
-cd KiraKiraOshareQuiz
-```
-
-### 2. 依存関係のインストール
-
-```powershell
-cd src
-npm install
-cd ..
-```
-
-### 3. 設定ファイルの作成
-
-テンプレートからデプロイ設定ファイルをコピーし、パスワードを設定します:
-
-```powershell
+cd backend/src && npm install && cd ..
 cp samconfig.toml.example samconfig.toml
-```
-
-`samconfig.toml` を開き、`AdminSecret` を変更してください:
-
-```toml
-parameter_overrides = "Stage=prod AdminSecret=あなたの管理者パスワード"
-```
-
-> ⚠️ `samconfig.toml` は `.gitignore` に含まれており、Git にコミットされません。秘密情報の漏洩を防ぐため、**絶対に `.gitignore` から除外しないでください**。
-
-## デプロイ
-
-### ビルド & デプロイ
-
-```powershell
-# ビルド
+# samconfig.toml の AdminSecret を変更
 sam build
-
-# デプロイ（初回は --guided を追加すると対話形式で設定可能）
 sam deploy
-
-# 初回のみ対話形式でデプロイする場合:
-sam deploy --guided
 ```
 
-デプロイ完了後、出力に **WebSocket API の URL** が表示されます:
+## DynamoDB テーブル設計
 
-```
-WebSocketApiUrl = wss://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod
-```
+シングルテーブルデザインを採用し、GSI1 でクエリパターンを拡張しています。
 
-この URL をフロントエンドの設定に使用します。
+### メインテーブル: `quiz-app-{stage}`
 
-### デプロイの確認
-
-```powershell
-# スタックの出力を確認
-aws cloudformation describe-stacks --stack-name quiz-app --query "Stacks[0].Outputs"
-```
-
-## クイズデータの形式
-
-`sample-data/quizzes.json` を参考に、以下の形式で作成します:
-
-```json
-{
-  "quizzes": [
-    {
-      "quizId": "c1-q1",
-      "cornerNumber": 1,
-      "cornerTitle": "一般常識クイズ",
-      "questionNumber": 1,
-      "questionText": "日本で一番高い山は何でしょう？",
-      "questionType": "text",
-      "modelAnswer": "富士山",
-      "acceptableAnswers": ["富士山", "ふじさん"],
-      "points": 10,
-      "order": 1
-    },
-    {
-      "quizId": "c1-q2",
-      "cornerNumber": 1,
-      "cornerTitle": "一般常識クイズ",
-      "questionNumber": 2,
-      "questionText": "東京タワーの高さは？",
-      "questionType": "choice",
-      "choices": ["233m", "333m", "433m", "533m"],
-      "correctChoiceIndex": 1,
-      "points": 10,
-      "order": 2
-    }
-  ]
-}
-```
-
-### フィールド説明
-
-| フィールド | 必須 | 説明 |
+| PK | SK | 用途 |
 |---|---|---|
-| `quizId` | ○ | 一意の問題ID（例: `c1-q1`） |
-| `cornerNumber` | | コーナー番号 |
-| `cornerTitle` | | コーナータイトル |
-| `questionNumber` | | コーナー内の問題番号 |
-| `questionText` | ○ | 問題文 |
-| `questionType` | ○ | `"text"` または `"choice"` |
-| `modelAnswer` | △ | テキスト問題の模範解答 |
-| `acceptableAnswers` | | 正解として許容する別表記の配列 |
-| `choices` | △ | 選択肢問題の選択肢配列 |
-| `correctChoiceIndex` | △ | 正解の選択肢インデックス（0始まり） |
-| `points` | | 獲得点数（デフォルト: 10） |
-| `order` | | 出題順（ソート用） |
+| `GAME` | `STATE` | ゲーム状態（status, currentQuizId, questionHistory, sessionId 等） |
+| `QUIZ#{quizId}` | `META` | クイズ問題データ |
+| `QUIZ#{quizId}` | `ANSWER#{playerId}` | 回答データ（isCorrect, pointsAwarded 含む） |
+| `PLAYER#{playerId}` | `META` | プレイヤーデータ（totalScore, correctCount 等） |
+
+### 接続テーブル: `quiz-app-connections-{stage}`
+
+| connectionId | role | playerId |
+|---|---|---|
+| WebSocket接続ID | player/admin/display/unknown | プレイヤーID（playerのみ） |
+
+## セッション管理
+
+ゲーム状態に `sessionId` フィールドを保持し、クイズセッションのライフサイクルを管理します。
+
+- **`loadQuizzes`**: `randomUUID()` で新しい `sessionId` を生成し、`gameState.sessionId` に保存。全クライアントにブロードキャスト。
+- **`resetAll`**: `sessionId` を `null` にリセット。全クライアントに `full_reset` をブロードキャスト。
+- **`getState`**: `state_sync` レスポンスに `sessionId` を含む。
+- **`register`**: `registered` レスポンスに `sessionId` を含む。
+
+フロントエンドはこの `sessionId` を `localStorage` に保存し、サーバーから受信した値と比較することで、リセット後にスマホロック解除した端末が前のクイズの参加状態を引きずることを防ぎます。
+
+## 自動採点の仕組み（選択問題）
+
+`submitAnswer.mjs` で選択問題の回答を受信した際、`correctChoiceIndex` と照合して即座に正誤判定とポイント計算を行います。
+
+```
+1. 回答受信 → putAnswer (isCorrect=null)
+2. correctChoiceIndex と照合 → 正解/不正解を判定
+3. 正解の場合:
+   a. updateAnswerJudgment(true, 0) で一時マーク
+   b. 全正解回答を answeredAt でソート → rank を算出
+   c. calcPoints(basePoints, rank) でポイント計算
+   d. updateAnswerJudgment(true, pointsAwarded) で確定
+   e. プレイヤーの totalScore を加算
+4. judgment_result をプレイヤーに送信
+5. judgment_updated を管理画面に送信（ScoreBoard リアルタイム更新）
+6. live_correct_update を表示画面に送信
+```
+
+`closeAnswers.mjs` は回答締切時に全回答が採点済みかチェックし、全員採点済み（＝選択問題のみ）なら `judging` フェーズをスキップして直接 `showing_answer` に遷移します。
 
 ## WebSocket API リファレンス
 
 ### クライアント → サーバー
 
-接続後、JSON メッセージの `action` フィールドでルーティングされます。
+| action | 送信元 | パラメータ | 説明 |
+|---|---|---|---|
+| `register` | 解答者 | `name`, `playerId?` | プレイヤー登録・再接続。`accepting` 時のみ新規可 |
+| `connect_role` | 管理者/表示 | `role`, `secret` | パスワード認証。`full_state` を返す |
+| `load_quizzes` | 管理者 | `quizzes[]` | クイズデータ読込。`sessionId` を生成 |
+| `start_question` | 管理者 | `quizId` | 出題開始。参加受付を終了 |
+| `submit_answer` | 解答者 | `quizId`, `answerText?`, `choiceIndex?` | 回答送信。選択問題は即時自動採点 |
+| `close_answers` | 管理者 | — | 回答締切。全員採点済みなら即正解発表 |
+| `judge` | 管理者 | `quizId`, `playerId`, `isCorrect` | テキスト問題の手動採点。採点済みは無視 |
+| `reveal_answer` | 管理者 | — | 正解発表。未採点を自動不正解処理 |
+| `show_scores` | 管理者 | — | 最終成績発表。全問出題済みが条件 |
+| `reset_all` | 管理者 | — | 全データリセット。`sessionId` を null に |
+| `get_state` | 全員 | — | 現在状態取得。`sessionId` を含む |
+| `ping` | 全員 | — | キープアライブ（30秒間隔） |
 
-| action | 送信元 | 主なパラメータ |
-|---|---|---|
-| `register` | 解答者 | `name`, `playerId?` |
-| `connect_role` | 管理者/表示 | `role`, `secret` |
-| `submit_answer` | 解答者 | `quizId`, `answerText?`, `choiceIndex?` |
-| `start_question` | 管理者 | `quizId` |
-| `close_answers` | 管理者 | — |
-| `judge` | 管理者 | `quizId`, `playerId`, `isCorrect` |
-| `judge_bulk` | 管理者 | `quizId`, `judgments[]` |
-| `reveal_answer` | 管理者 | — |
-| `show_scores` | 管理者 | — |
-| `reset_to_waiting` | 管理者 | — |
-| `load_quizzes` | 管理者 | `quizzes[]` |
-| `get_state` | 全員 | — |
+### サーバー → クライアント
 
-### サーバー → クライアント（主なイベント）
+| event | 配信先 | 主要フィールド | 説明 |
+|---|---|---|---|
+| `registered` | 解答者 | `playerId`, `sessionId`, `myAnswer`, `myJudgment` | 登録完了。リロード復帰に必要な全データを含む |
+| `registration_rejected` | 解答者 | `reason`, `sessionId` | 登録拒否（init or 受付終了） |
+| `full_state` | 管理者/表示 | `gameState{sessionId}`, `players`, `quizzes` | 認証後のフルステート |
+| `state_sync` | 全員 | `sessionId`, `myAnswer`, `myJudgment`, `revealData` | 現在状態。リロード復帰の核 |
+| `game_state_update` | 全員 | `status`, `sessionId`, `totalQuizCount` | CSV読込時のステータス変更 |
+| `question_started` | 全員 | `quizId`, `questionNumber`, `questionText`, `choices?` | 出題開始 |
+| `answer_submitted` | 解答者 | `answerText`, `answeredAt` | 回答受付確認 |
+| `judgment_result` | 解答者 | `isCorrect`, `pointsAwarded`, `totalScore` | 正誤結果（自動/手動共通） |
+| `new_answer` | 管理者 | `playerId`, `answerText`, `isCorrect?`, `pointsAwarded?` | 新回答（自動採点結果付きの場合あり） |
+| `judgment_updated` | 管理者 | `playerId`, `isCorrect`, `pointsAwarded`, `totalScore` | 採点結果更新（ScoreBoard連動） |
+| `live_correct_update` | 表示 | `correctPlayers[{rank, playerName, pointsAwarded, elapsedMs}]` | 正解者リアルタイム更新 |
+| `answer_count_update` | 表示 | `count`, `total` | 回答済み人数 |
+| `answers_closed` | 全員 | — | 回答締切 |
+| `answer_revealed` | 全員 | `correctAnswer`, `acceptableAnswers`, `correctPlayers` | 正解発表 |
+| `scores_revealed` | 全員 | `rankings` | 最終成績 |
+| `full_reset` | 全員 | `sessionId: null` | リセット。全クライアントが初期状態に戻る |
+| `error` | 送信者 | `code`, `message` | エラー（i18n 対応エラーコード） |
 
-| event | 配信先 | 説明 |
-|---|---|---|
-| `registered` | 解答者 | 登録完了・playerId発行 |
-| `full_state` | 管理者/表示 | 接続時のフルステート |
-| `question_started` | 全員 | 出題開始 |
-| `answer_submitted` | 解答者 | 回答受付確認 |
-| `new_answer` | 管理者 | 新しい回答の通知 |
-| `answer_count_update` | 表示 | 回答済み人数 |
-| `answers_closed` | 全員 | 回答締切 |
-| `judgment_result` | 解答者 | 正誤結果 |
-| `answer_revealed` | 全員 | 正解発表 |
-| `scores_revealed` | 全員 | 成績発表 |
-| `game_state_update` | 全員 | 状態遷移通知 |
+### エラーコード一覧
 
-## プロジェクト構成
+バックエンドは日本語メッセージを直接返さず、エラーコードを返します。フロントエンドが `i18n/ja.js` の `error.*` キーで翻訳して表示します。
 
-```
-KiraKiraOshareQuiz/
-├── template.yaml          # SAM テンプレート（インフラ定義）
-├── samconfig.toml.example # SAM デプロイ設定（テンプレート）
-├── src/
-│   ├── package.json
-│   ├── index.mjs          # Lambda エントリポイント（ルーター）
-│   ├── handlers/
-│   │   ├── connect.mjs        # WebSocket $connect
-│   │   ├── disconnect.mjs     # WebSocket $disconnect
-│   │   ├── register.mjs       # 解答者登録
-│   │   ├── connectRole.mjs    # 管理者/表示ログイン
-│   │   ├── submitAnswer.mjs   # 回答送信
-│   │   ├── startQuestion.mjs  # 出題開始
-│   │   ├── closeAnswers.mjs   # 回答締切
-│   │   ├── judge.mjs          # 個別正誤判定
-│   │   ├── judgeBulk.mjs      # 一括正誤判定
-│   │   ├── revealAnswer.mjs   # 正解発表
-│   │   ├── showScores.mjs     # 成績発表
-│   │   ├── resetToWaiting.mjs # 待機状態に戻す
-│   │   ├── loadQuizzes.mjs    # クイズデータ投入
-│   │   └── getState.mjs       # 状態取得（再接続用）
-│   └── lib/
-│       ├── db.mjs             # DynamoDB 操作
-│       └── broadcast.mjs      # WebSocket 配信
-├── sample-data/
-│   └── quizzes.json       # サンプルクイズデータ
-├── LICENSE
-└── README.md
-```
-
-## 運用コスト
-
-50人参加・30問・3時間のイベントを想定した場合:
-
-| リソース | 概算コスト |
+| code | 意味 |
 |---|---|
-| API Gateway WebSocket | ~10円 |
-| Lambda | 無料枠内 |
-| DynamoDB | 無料枠内 |
-| S3 + CloudFront | ほぼ0円 |
-| **合計** | **100円未満** |
-
-## クリーンアップ
-
-イベント終了後、不要であればリソースを削除できます:
-
-```powershell
-sam delete --stack-name quiz-app
-```
-
-## ローカル開発（オプション）
-
-SAM CLI でローカルテストも可能です:
-
-```powershell
-# Lambda をローカルで起動（HTTP のみ、WebSocket は非対応）
-sam local start-api
-
-# 個別の Lambda 関数をテスト
-sam local invoke QuizHandlerFunction -e tests/events/connect.json
-```
-
-> ⚠️ WebSocket API のローカルテストは SAM CLI では直接サポートされていないため、
-> `wscat` 等のツールでデプロイ済みの API に接続してテストすることを推奨します。
-
-```powershell
-# wscat でテスト接続
-npx wscat -c wss://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod
-> {"action": "register", "name": "テスト太郎"}
-```
+| `name_required` | 名前未入力 |
+| `name_taken` | 名前が既に使用されている |
+| `wrong_password` | パスワード不一致 |
+| `invalid_role` | 無効なロール指定 |
+| `not_init_state` | init 以外でのクイズ読込 |
+| `empty_quizzes` | クイズデータが空 |
+| `invalid_quiz` | 必須フィールド不足 |
+| `invalid_state` | 現在の状態では実行不可 |
+| `not_accepting_answers` | 回答受付中でない |
+| `quiz_id_mismatch` | 問題IDが一致しない |
+| `already_answered` | 既に回答済み |
+| `not_all_questions` | 全問出題されていない |
 
 ## ライセンス
 
-MIT License — 詳細は [LICENSE](./LICENSE) を参照してください。
+MIT License

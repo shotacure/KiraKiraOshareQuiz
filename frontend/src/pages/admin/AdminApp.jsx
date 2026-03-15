@@ -2,24 +2,20 @@ import { useState, useEffect, useRef } from 'react';
 import { useGame, useMessageHandler } from '../../contexts/GameContext';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { ADMIN_SECRET_KEY } from '../../config';
-import { ConnectionBadge, Button, Card, SectionTitle, formatElapsedMs } from '../../components/UI';
+import { Button, Card, SectionTitle, formatElapsedMs } from '../../components/UI';
 import { t } from '../../i18n';
 
 /**
  * Parse a CSV string into quiz objects.
- * Pipe-delimited for array fields (acceptableAnswers, choices).
  */
 function parseCsvToQuizzes(csvText) {
   const lines = csvText.trim().split(/\r?\n/);
   if (lines.length < 2) throw new Error(t('admin.csv.noData'));
-
   const header = lines[0].split(',').map(h => h.trim());
   const quizzes = [];
-
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-
     const values = [];
     let current = '';
     let inQuotes = false;
@@ -29,14 +25,11 @@ function parseCsvToQuizzes(csvText) {
       current += ch;
     }
     values.push(current.trim());
-
     const row = {};
     header.forEach((col, idx) => { row[col] = values[idx] || ''; });
-
     if (!row.questionText || !row.questionType) {
       throw new Error(t('admin.csv.invalidRow', { row: i + 1 }));
     }
-
     const qNum = parseInt(row.questionNumber) || i;
     quizzes.push({
       quizId: `q${String(qNum).padStart(3, '0')}`,
@@ -80,6 +73,17 @@ export default function AdminApp() {
     if (state.authError) setSubmitting(false);
   }, [state.authed, state.authError]);
 
+  // Visibility resync for admin
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && connected && state.authed) {
+        send({ action: 'connect_role', role: 'admin', secret: authedSecretRef.current });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [connected, state.authed, send]);
+
   const handleLogin = () => {
     if (!secret.trim() || submitting) return;
     dispatch({ type: 'CLEAR_ERROR' }); setSubmitting(true);
@@ -90,7 +94,6 @@ export default function AdminApp() {
   if (!state.authed) {
     return (
       <div className="min-h-screen bg-quiz-bg flex items-center justify-center">
-        <ConnectionBadge connected={connected} />
         <Card className="w-full max-w-md mx-4">
           <h1 className="font-display font-black text-2xl text-quiz-text mb-6 text-center">{t('admin.login.title')}</h1>
           {state.authError && <div className="mb-4 px-4 py-3 rounded-xl bg-quiz-accent/15 border border-quiz-accent/30 text-quiz-accent text-sm">{state.authError}</div>}
@@ -109,13 +112,14 @@ export default function AdminApp() {
 
   return (
     <div className="min-h-screen bg-quiz-bg p-4">
-      <ConnectionBadge connected={connected} />
-      <div className="flex items-center justify-between mb-4 pl-28">
+      {/* Header: title and info left, connection badge right */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h1 className="font-display font-black text-xl text-quiz-text">{t('admin.dashboard.title')}</h1>
-        <div className="flex items-center gap-3">
-          <StatusBadge status={state.status} />
-          <span className="text-quiz-muted text-sm">{t('admin.dashboard.players', { count: state.players.length })}</span>
-          <span className="text-quiz-muted text-sm">{t('admin.dashboard.progress', { done: state.questionHistory.length, total: state.totalQuizCount })}</span>
+        <StatusBadge status={state.status} />
+        <span className="text-quiz-muted text-sm whitespace-nowrap">{t('admin.dashboard.players', { count: state.players.length })}</span>
+        <span className="text-quiz-muted text-sm whitespace-nowrap">{t('admin.dashboard.progress', { done: state.questionHistory.length, total: state.totalQuizCount })}</span>
+        <div className="ml-auto">
+          <ConnBadge connected={connected} />
         </div>
       </div>
       <div className="grid grid-cols-12 gap-4">
@@ -132,6 +136,16 @@ export default function AdminApp() {
         </div>
       </div>
     </div>
+  );
+}
+
+/* Inline connection badge (not fixed/absolute) */
+function ConnBadge({ connected }) {
+  return (
+    <span className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold ${connected ? 'bg-quiz-green/20 text-quiz-green' : 'bg-quiz-accent/20 text-quiz-accent animate-pulse'}`}>
+      <span className={`w-2 h-2 rounded-full ${connected ? 'bg-quiz-green' : 'bg-quiz-accent'}`} />
+      {connected ? t('app.connecting') : t('app.reconnecting')}
+    </span>
   );
 }
 
@@ -177,7 +191,25 @@ function ControlPanel({ state, send }) {
   return (
     <Card>
       <SectionTitle>{t('admin.control.title')}</SectionTitle>
-      <div className="min-h-[160px] space-y-2">
+
+      {/* Next question preview area (fixed height so button position stays stable) */}
+      <div className="min-h-[80px] mb-2">
+        {status === 'init' && (
+          <p className="text-quiz-muted text-sm">{t('admin.question.empty.init')}</p>
+        )}
+        {(status === 'accepting' || status === 'showing_answer') && nextQuiz && (
+          <>
+            <p className="text-quiz-muted text-xs mb-1">{t('admin.control.nextQuestion')} Q{nextQuiz.questionNumber}</p>
+            <p className="text-quiz-text text-sm truncate">{nextQuiz.questionText}</p>
+          </>
+        )}
+        {(status === 'accepting' || status === 'showing_answer') && !nextQuiz && (
+          <p className="text-quiz-muted text-sm">{t('admin.control.noMoreQuestions')}</p>
+        )}
+      </div>
+
+      {/* Action buttons (position stays fixed regardless of content above) */}
+      <div className="space-y-2">
         {status === 'init' && (
           <>
             <input ref={fileRef} type="file" accept=".csv" onChange={handleLoadFile} className="hidden" />
@@ -186,31 +218,17 @@ function ControlPanel({ state, send }) {
             </Button>
           </>
         )}
-
-        {(status === 'accepting' || status === 'showing_answer') && (
-          <div>
-            {nextQuiz ? (
-              <>
-                <p className="text-quiz-muted text-xs mb-1">{t('admin.control.nextQuestion')} Q{nextQuiz.questionNumber}</p>
-                <p className="text-quiz-text text-sm mb-2 truncate">{nextQuiz.questionText}</p>
-                <Button onClick={() => send({ action: 'start_question', quizId: nextQuiz.quizId })} variant="teal" size="sm" className="w-full">
-                  {t('admin.control.startQuestion')}
-                </Button>
-              </>
-            ) : (
-              <p className="text-quiz-muted text-sm">{t('admin.control.noMoreQuestions')}</p>
-            )}
-          </div>
+        {(status === 'accepting' || status === 'showing_answer') && nextQuiz && (
+          <Button onClick={() => send({ action: 'start_question', quizId: nextQuiz.quizId })} variant="teal" size="sm" className="w-full">
+            {t('admin.control.startQuestion')}
+          </Button>
         )}
-
         {status === 'showing_answer' && allAsked && (
           <Button onClick={() => send({ action: 'show_scores' })} variant="purple" size="sm" className="w-full">{t('admin.control.showScores')}</Button>
         )}
-
         {status === 'answering' && (
           <Button onClick={() => send({ action: 'close_answers' })} variant="gold" size="sm" className="w-full">{t('admin.control.closeAnswers')}</Button>
         )}
-
         {status === 'judging' && (
           <Button onClick={() => send({ action: 'reveal_answer' })} variant="accent" size="sm" className="w-full">{t('admin.control.revealAnswer')}</Button>
         )}
@@ -222,6 +240,7 @@ function ControlPanel({ state, send }) {
   );
 }
 
+/* CurrentQuestion: show modelAnswer + acceptableAnswers during answering/judging/showing_answer */
 function CurrentQuestion({ quiz, state }) {
   if (!quiz) {
     const msg = state.status === 'init' ? t('admin.question.empty.init')
@@ -229,6 +248,9 @@ function CurrentQuestion({ quiz, state }) {
       : t('admin.question.empty.default');
     return <Card className="text-center py-8"><p className="text-quiz-muted">{msg}</p></Card>;
   }
+
+  const showAnswer = ['answering', 'judging', 'showing_answer'].includes(state.status);
+
   return (
     <Card>
       <div className="flex items-center gap-2 mb-2">
@@ -236,9 +258,6 @@ function CurrentQuestion({ quiz, state }) {
         <span className="ml-auto text-quiz-gold text-sm font-bold">+{quiz.points}pt</span>
       </div>
       <p className="font-body text-quiz-text text-base leading-relaxed">{quiz.questionText}</p>
-      {quiz.modelAnswer && (
-        <p className="mt-2 text-sm"><span className="text-quiz-muted">{t('admin.question.modelAnswer')} </span><span className="text-quiz-green font-bold">{quiz.modelAnswer}</span></p>
-      )}
       {quiz.choices && quiz.choices.length > 0 && (
         <div className="mt-2 space-y-1">
           {quiz.choices.map((c, i) => (
@@ -246,6 +265,18 @@ function CurrentQuestion({ quiz, state }) {
               {String.fromCharCode(65 + i)}. {c} {i === quiz.correctChoiceIndex && '\u2713'}
             </div>
           ))}
+        </div>
+      )}
+      {/* Model answer display during active question states */}
+      {showAnswer && quiz.modelAnswer && (
+        <div className="mt-3 pt-3 border-t border-white/10">
+          <p className="text-sm">
+            <span className="text-quiz-muted">{t('admin.question.modelAnswer')} </span>
+            <span className="text-quiz-green font-black text-base">{quiz.modelAnswer}</span>
+          </p>
+          {quiz.acceptableAnswers && quiz.acceptableAnswers.length > 0 && (
+            <p className="text-quiz-muted text-xs mt-1">({quiz.acceptableAnswers.join(', ')})</p>
+          )}
         </div>
       )}
     </Card>
@@ -262,6 +293,9 @@ function AnswerList({ state, send }) {
 
   const sorted = [...answers].sort((a, b) => (a.elapsedMs ?? Infinity) - (b.elapsedMs ?? Infinity));
 
+  // Only the first unjudged answer can be judged (sequential, top-to-bottom)
+  const firstUnjudgedIdx = sorted.findIndex(a => a.isCorrect === null);
+
   return (
     <Card>
       <SectionTitle className="!mb-3">{t('admin.answers.title', { count: answers.length })}</SectionTitle>
@@ -270,10 +304,13 @@ function AnswerList({ state, send }) {
           <p className="text-quiz-muted text-sm text-center py-4">{t('admin.answers.empty')}</p>
         ) : sorted.map((a, i) => {
           const judged = a.isCorrect !== null;
+          const isActive = !judged && i === firstUnjudgedIdx;
+          const canClick = judged || isActive;
           return (
             <div key={a.playerId} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
               a.isCorrect === true ? 'bg-quiz-green/10 border border-quiz-green/20' :
               a.isCorrect === false ? 'bg-quiz-accent/10 border border-quiz-accent/20' :
+              isActive ? 'bg-quiz-surface/80 border border-quiz-teal/30' :
               'bg-quiz-surface/50'
             }`}>
               <span className="text-quiz-muted font-mono w-6 text-center text-xs">{i + 1}</span>
@@ -286,19 +323,19 @@ function AnswerList({ state, send }) {
                 <span className="text-quiz-gold text-xs font-bold whitespace-nowrap">+{a.pointsAwarded}</span>
               )}
               <div className="flex gap-1 ml-1 shrink-0">
-                <button onClick={() => !judged && handleJudge(a.playerId, true)}
-                  disabled={judged}
+                <button onClick={() => isActive && handleJudge(a.playerId, true)}
+                  disabled={!isActive}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
                     a.isCorrect === true ? 'bg-quiz-green text-white' :
-                    judged ? 'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed' :
-                    'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green'
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-green/30 hover:text-quiz-green' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
                   }`}>{'\u25CB'}</button>
-                <button onClick={() => !judged && handleJudge(a.playerId, false)}
-                  disabled={judged}
+                <button onClick={() => isActive && handleJudge(a.playerId, false)}
+                  disabled={!isActive}
                   className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${
                     a.isCorrect === false ? 'bg-quiz-accent text-white' :
-                    judged ? 'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed' :
-                    'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent'
+                    isActive ? 'bg-quiz-surface text-quiz-muted hover:bg-quiz-accent/30 hover:text-quiz-accent' :
+                    'bg-quiz-surface/30 text-quiz-muted/30 cursor-not-allowed'
                   }`}>{'\u00D7'}</button>
               </div>
             </div>
@@ -312,7 +349,7 @@ function AnswerList({ state, send }) {
 function ScoreBoard({ players, rankings }) {
   const list = rankings.length > 0 ? [...rankings].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((r, i) => ({ ...r, rank: i + 1 })) :
     [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).map((p, i) => ({
-      rank: i + 1, name: p.name, playerId: p.playerId, totalScore: p.totalScore || 0, correctCount: p.correctCount || 0,
+      rank: i + 1, name: p.name, playerId: p.playerId, totalScore: p.totalScore || 0,
     }));
   return (
     <Card className="max-h-[40vh] overflow-y-auto">

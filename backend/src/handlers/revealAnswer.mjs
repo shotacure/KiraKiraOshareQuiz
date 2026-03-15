@@ -6,8 +6,70 @@ import {
   getAnswersForQuiz,
   updateAnswerJudgment,
   getPlayer,
+  putPlayer,
 } from '../lib/db.mjs';
 import { broadcastToAll, sendToConnection } from '../lib/broadcast.mjs';
+
+/**
+ * Logarithmic point calculation based on answer-speed rank.
+ */
+function calcPoints(basePoints, rank) {
+  if (rank <= 0) return basePoints;
+  if (rank === 1) return basePoints;
+  const pts = Math.round(basePoints * Math.log(2) / Math.log(rank + 1));
+  return Math.max(1, pts);
+}
+
+/**
+ * Recalculate points for all correct answers based on definitive answeredAt order.
+ * Fixes any race-condition-induced point miscalculation from submit-time auto-judging.
+ */
+async function recalculateCorrectPoints(quizId, basePoints) {
+  const allAnswers = await getAnswersForQuiz(quizId);
+  const correctAnswers = allAnswers
+    .filter((a) => a.isCorrect === true)
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
+
+  for (let i = 0; i < correctAnswers.length; i++) {
+    const a = correctAnswers[i];
+    const correctRank = i + 1;
+    const correctPts = calcPoints(basePoints, correctRank);
+
+    // Always update if points differ (fixes race conditions from auto-judge)
+    const diff = correctPts - (a.pointsAwarded || 0);
+    if (diff !== 0) {
+      await updateAnswerJudgment(quizId, a.playerId, true, correctPts);
+
+      const player = await getPlayer(a.playerId);
+      if (player) {
+        player.totalScore = (player.totalScore || 0) + diff;
+        await putPlayer(player);
+
+        // Notify the player of finalized points
+        if (player.connectionId) {
+          await sendToConnection(player.connectionId, {
+            event: 'judgment_result',
+            quizId,
+            isCorrect: true,
+            pointsAwarded: correctPts,
+            totalScore: player.totalScore,
+          });
+        }
+
+        // Update all clients' player lists for rank display
+        await broadcastToAll({
+          event: 'judgment_updated',
+          quizId,
+          playerId: a.playerId,
+          isCorrect: true,
+          pointsAwarded: correctPts,
+          playerName: player.name,
+          totalScore: player.totalScore,
+        });
+      }
+    }
+  }
+}
 
 export async function handleRevealAnswer(connectionId) {
   const conn = await getConnection(connectionId);
@@ -28,7 +90,6 @@ export async function handleRevealAnswer(connectionId) {
   for (const a of answers) {
     if (a.isCorrect === null) {
       await updateAnswerJudgment(gameState.currentQuizId, a.playerId, false, 0);
-      // Notify the player they were incorrect
       const player = await getPlayer(a.playerId);
       if (player?.connectionId) {
         await sendToConnection(player.connectionId, {
@@ -42,12 +103,15 @@ export async function handleRevealAnswer(connectionId) {
     }
   }
 
+  // Recalculate all correct answer points to fix any race-condition discrepancies
+  await recalculateCorrectPoints(gameState.currentQuizId, quiz.points || 10);
+
   await updateGameState({
     status: 'showing_answer',
     revealedAnswer: true,
   });
 
-  // Re-fetch answers after auto-marking
+  // Re-fetch answers after recalculation
   const finalAnswers = await getAnswersForQuiz(gameState.currentQuizId);
   const correctPlayers = finalAnswers
     .filter((a) => a.isCorrect === true)
@@ -75,6 +139,7 @@ export async function handleRevealAnswer(connectionId) {
     event: 'answer_revealed',
     quizId: quiz.quizId,
     correctAnswer,
+    acceptableAnswers: quiz.acceptableAnswers || [],
     questionText: quiz.questionText,
     points: quiz.points,
     correctPlayers,

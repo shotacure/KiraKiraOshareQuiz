@@ -1,5 +1,5 @@
 import { putConnection, putPlayer, getPlayer, getPlayerByName, getGameState, getAllPlayers, getAnswer } from '../lib/db.mjs';
-import { sendToConnection, broadcastToRoles } from '../lib/broadcast.mjs';
+import { sendToConnection, broadcastToAll } from '../lib/broadcast.mjs';
 import { randomUUID } from 'crypto';
 
 export async function handleRegister(connectionId, body) {
@@ -25,7 +25,7 @@ export async function handleRegister(connectionId, body) {
   }
 
   if (player) {
-    // Existing player reconnecting — always allowed regardless of game state
+    // Existing player found — this is a reconnection (allowed in any state)
     player.connectionId = connectionId;
     if (trimmedName !== player.name) {
       const existing = await getPlayerByName(trimmedName);
@@ -42,17 +42,18 @@ export async function handleRegister(connectionId, body) {
     }
     await putPlayer(player);
   } else {
-    // New player — only allowed during 'accepting' state
+    // Player not found (new player or stale session)
+    // New registration only allowed during 'accepting' state
     if (gameState.status !== 'accepting') {
       await sendToConnection(connectionId, {
         event: 'registration_rejected',
         reason: gameState.status === 'init' ? 'not_accepting' : 'closed',
+        sessionId: gameState.sessionId || null,
         message: gameState.status === 'init' ? 'not_accepting' : 'registration_closed',
       });
       return { statusCode: 400, body: 'Not accepting registrations' };
     }
 
-    // Check for duplicate name
     const existing = await getPlayerByName(trimmedName);
     if (existing) {
       await sendToConnection(connectionId, {
@@ -83,16 +84,19 @@ export async function handleRegister(connectionId, body) {
     connectedAt: new Date().toISOString(),
   });
 
+  // Build response including sessionId and judgment for reload recovery
   const response = {
     event: 'registered',
     playerId,
     name: player.name,
     totalScore: player.totalScore,
+    sessionId: gameState.sessionId || null,
     gameState: {
       status: gameState.status,
       currentQuizId: gameState.currentQuizId,
     },
     myAnswer: null,
+    myJudgment: null,
   };
 
   if (gameState.currentQuizId) {
@@ -101,16 +105,21 @@ export async function handleRegister(connectionId, body) {
       response.myAnswer = {
         answerText: existingAnswer.answerText,
         answeredAt: existingAnswer.answeredAt,
-        isCorrect: existingAnswer.isCorrect,
-        pointsAwarded: existingAnswer.pointsAwarded,
       };
+      if (existingAnswer.isCorrect !== null) {
+        response.myJudgment = {
+          isCorrect: existingAnswer.isCorrect,
+          pointsAwarded: existingAnswer.pointsAwarded,
+        };
+      }
     }
   }
 
   await sendToConnection(connectionId, response);
 
+  // Notify all clients (including other players for rank/count display)
   const allPlayers = await getAllPlayers();
-  await broadcastToRoles(['admin', 'display'], {
+  await broadcastToAll({
     event: 'player_joined',
     playerId,
     name: player.name,

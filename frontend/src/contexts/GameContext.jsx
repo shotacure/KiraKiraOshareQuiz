@@ -14,6 +14,7 @@ const initialState = {
   playerId: null,
   playerName: null,
   totalScore: 0,
+  sessionId: null,
 
   status: 'init',
   currentQuiz: null,
@@ -34,6 +35,7 @@ const initialState = {
   correctPlayers: [],
   correctAnswer: null,
   revealData: null,
+  syncCounter: 0,
 };
 
 function reducer(state, action) {
@@ -51,8 +53,10 @@ function reducer(state, action) {
         playerName: action.payload.name,
         totalScore: action.payload.totalScore || 0,
         status: action.payload.gameState?.status || state.status,
+        sessionId: action.payload.sessionId ?? state.sessionId,
         registrationRejected: false,
         myAnswer: action.payload.myAnswer || state.myAnswer,
+        myJudgment: action.payload.myJudgment || state.myJudgment,
       };
 
     case 'FULL_STATE': {
@@ -62,6 +66,7 @@ function reducer(state, action) {
         authed: true,
         authError: null,
         status: gs.status || 'init',
+        sessionId: gs.sessionId ?? state.sessionId,
         players: action.payload.players || [],
         quizzes: action.payload.quizzes || [],
         questionHistory: gs.questionHistory || [],
@@ -84,11 +89,13 @@ function reducer(state, action) {
     case 'CLEAR_ERROR':
       return { ...state, lastError: null, authError: null };
 
-    case 'QUESTION_STARTED':
+    case 'QUESTION_STARTED': {
+      // Merge full quiz data (modelAnswer, acceptableAnswers etc.) from quizzes array
+      const fullQuiz = state.quizzes.find(q => q.quizId === action.payload.quizId);
       return {
         ...state,
         status: 'answering',
-        currentQuiz: action.payload,
+        currentQuiz: fullQuiz ? { ...fullQuiz, ...action.payload } : action.payload,
         myAnswer: null,
         myJudgment: null,
         answers: [],
@@ -100,6 +107,7 @@ function reducer(state, action) {
         questionHistory: [...new Set([...(state.questionHistory), action.payload.quizId])],
         totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
       };
+    }
 
     case 'ANSWER_SUBMITTED':
       return {
@@ -132,15 +140,25 @@ function reducer(state, action) {
     case 'ANSWERS_FOR_JUDGING':
       return { ...state, answers: action.payload.answers || [] };
 
-    case 'JUDGMENT_RESULT':
+    case 'JUDGMENT_RESULT': {
+      // Update own judgment state
+      const newTotalScore = action.payload.totalScore;
+      // Also update own entry in players list so rank recalculates immediately
+      const updatedPlayersJR = state.players.map((p) =>
+        p.playerId === state.playerId
+          ? { ...p, totalScore: newTotalScore, correctCount: (p.correctCount || 0) + (action.payload.isCorrect ? 1 : 0) }
+          : p
+      );
       return {
         ...state,
         myJudgment: {
           isCorrect: action.payload.isCorrect,
           pointsAwarded: action.payload.pointsAwarded,
         },
-        totalScore: action.payload.totalScore,
+        totalScore: newTotalScore,
+        players: updatedPlayersJR,
       };
+    }
 
     case 'JUDGMENT_UPDATED': {
       const updated = state.answers.map((a) =>
@@ -190,6 +208,7 @@ function reducer(state, action) {
         ...state,
         quizzes: action.payload.quizzes || [],
         status: 'accepting',
+        sessionId: action.payload.sessionId ?? state.sessionId,
         totalQuizCount: (action.payload.quizzes || []).length,
       };
 
@@ -197,6 +216,7 @@ function reducer(state, action) {
       return {
         ...state,
         status: action.payload.status,
+        sessionId: action.payload.sessionId ?? state.sessionId,
         totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
         currentQuiz: action.payload.status === 'init' || action.payload.status === 'accepting'
           ? null : state.currentQuiz,
@@ -206,11 +226,17 @@ function reducer(state, action) {
       const ns = {
         ...state,
         status: action.payload.status,
+        sessionId: action.payload.sessionId ?? state.sessionId,
+        syncCounter: state.syncCounter + 1,
         questionHistory: action.payload.questionHistory || state.questionHistory,
         totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
       };
       if (action.payload.question) ns.currentQuiz = action.payload.question;
       if (action.payload.myAnswer) ns.myAnswer = action.payload.myAnswer;
+      // Restore judgment on reload (critical for showing_answer state)
+      if (action.payload.myJudgment) ns.myJudgment = action.payload.myJudgment;
+      // Restore reveal data on reload
+      if (action.payload.revealData) ns.revealData = action.payload.revealData;
       if (action.payload.rankings) ns.rankings = action.payload.rankings;
       if (action.payload.answers) ns.answers = action.payload.answers;
       if (action.payload.players) ns.players = action.payload.players;
@@ -259,14 +285,11 @@ export function useGame() {
 
 /**
  * Translate a server error code to a user-facing message via i18n.
- * Server sends { code: 'name_taken', name: 'foo', message: 'name_taken' }
- * We look up 'error.name_taken' in ja.js and interpolate params.
  */
 function translateError(msg) {
   const code = msg.code || msg.message;
   const i18nKey = `error.${code}`;
   const translated = t(i18nKey, msg);
-  // If t() returns the key itself (not found), fall back to raw message
   return translated === i18nKey ? (msg.message || code) : translated;
 }
 
@@ -307,11 +330,9 @@ export function useMessageHandler() {
         const code = msg.code || msg.message;
         const translated = translateError(msg);
         console.error('[Server Error]', code, translated);
-
         if (AUTH_ERROR_CODES.includes(code)) {
           dispatch({ type: 'AUTH_ERROR', payload: translated });
         } else {
-          // Store both code and translated message for consumers
           dispatch({ type: 'SET_ERROR', payload: { code, message: translated } });
         }
       } else {

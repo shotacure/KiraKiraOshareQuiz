@@ -13,29 +13,30 @@ export async function handleResetAll(connectionId) {
     return { statusCode: 403, body: 'Admin only' };
   }
 
-  // Delete all answers for each quiz
   const quizzes = await getAllQuizzes();
   const { deleteAllAnswersForQuiz } = await import('../lib/db.mjs');
   for (const q of quizzes) {
     await deleteAllAnswersForQuiz(q.quizId);
   }
 
-  // Delete all players and quizzes
   await deleteAllPlayers();
   await deleteAllQuizzes();
 
-  // Reset game state to init
+  // Reset game state including sessionId (null = no active session)
   await updateGameState({
     status: 'init',
     currentQuizId: null,
     questionStartedAt: null,
     questionHistory: [],
     revealedAnswer: false,
+    sessionId: null,
   });
 
+  // Broadcast with sessionId=null so all clients know the session is invalidated
   await broadcastToAll({
     event: 'full_reset',
     status: 'init',
+    sessionId: null,
   });
 
   return { statusCode: 200, body: 'Full reset complete' };
