@@ -1,40 +1,38 @@
 # Kira-Kira OshareQuiz — Backend 🎯
 
-AWS SAM によるサーバーレスバックエンドです。API Gateway WebSocket + Lambda + DynamoDB で構成されています。
+AWS SAM によるサーバーレスバックエンドです。API Gateway WebSocket + Lambda + DynamoDB + S3 で構成されています。
 
 ## 構成
 
 ```
 backend/
-├── template.yaml              # SAM テンプレート（インフラ定義）
+├── template.yaml              # SAM テンプレート（API GW + Lambda + DynamoDB + S3）
 ├── samconfig.toml.example     # デプロイ設定テンプレート
 ├── package.json
 ├── src/
 │   ├── package.json           # Lambda 依存関係
-│   ├── index.mjs              # WebSocket ルーター
-│   ├── handlers/              # アクションハンドラー
+│   ├── index.mjs              # WebSocket ルーター（13アクション + ping）
+│   ├── handlers/
 │   │   ├── connect.mjs        # $connect — 接続時の初期化
 │   │   ├── disconnect.mjs     # $disconnect — 切断時のクリーンアップ
 │   │   ├── register.mjs       # register — プレイヤー登録・再接続
 │   │   ├── connectRole.mjs    # connect_role — 管理者/表示画面の認証
-│   │   ├── loadQuizzes.mjs    # load_quizzes — クイズ読込 + sessionId 生成
+│   │   ├── loadQuizzes.mjs    # load_quizzes — クイズ読込 + sessionId + quizTitle
 │   │   ├── startQuestion.mjs  # start_question — 出題開始（参加受付終了）
-│   │   ├── submitAnswer.mjs   # submit_answer — 回答送信（選択問題は即時自動採点）
+│   │   ├── submitAnswer.mjs   # submit_answer — 回答送信（選択問題は即時自動採点+ポイント）
 │   │   ├── closeAnswers.mjs   # close_answers — 回答締切（全員採点済みなら即正解発表）
-│   │   ├── judge.mjs          # judge — テキスト問題の手動○×判定
-│   │   ├── revealAnswer.mjs   # reveal_answer — 正解発表（未採点を自動不正解処理）
-│   │   ├── showScores.mjs     # show_scores — 最終成績発表
-│   │   ├── resetAll.mjs       # reset_all — 全データリセット + sessionId クリア
+│   │   ├── judge.mjs          # judge — テキスト問題の手動○×判定（順次・ポイント即時確定）
+│   │   ├── revealAnswer.mjs   # reveal_answer — 正解発表（recalculate + 正解率 + ストリーク）
+│   │   ├── showScores.mjs     # show_scores — 最終成績発表 + S3レポート出力
+│   │   ├── resetAll.mjs       # reset_all — 全データリセット
 │   │   └── getState.mjs       # get_state — 現在状態取得（リロード復帰用）
 │   └── lib/
 │       ├── db.mjs             # DynamoDB 操作ユーティリティ
 │       └── broadcast.mjs      # WebSocket 配信ユーティリティ
 ├── sample-data/
-│   └── quizzes.csv            # サンプルクイズデータ
-├── scripts/
-│   └── load-quizzes.mjs       # CLI からクイズを投入するスクリプト
-└── tests/
-    └── events/                # テスト用 Lambda イベント
+│   └── quizzes.csv            # サンプルクイズデータ（#title メタデータ付き）
+└── scripts/
+    └── load-quizzes.mjs       # CLI からクイズを投入するスクリプト
 ```
 
 ## セットアップ
@@ -55,18 +53,34 @@ sam build
 sam deploy
 ```
 
-## DynamoDB テーブル設計
+## インフラリソース（template.yaml）
 
-シングルテーブルデザインを採用し、GSI1 でクエリパターンを拡張しています。
+| リソース | 種類 | 用途 |
+|---|---|---|
+| `QuizTable` | DynamoDB | メインデータ（シングルテーブル + GSI1） |
+| `ConnectionsTable` | DynamoDB | WebSocket 接続管理（TTL 付き） |
+| `ResultsBucket` | S3 | 結果レポート出力（365日で自動期限切れ） |
+| `QuizWebSocketApi` | API Gateway v2 | WebSocket エンドポイント |
+| `QuizHandlerFunction` | Lambda | 全アクションを処理する単一ハンドラー |
+
+### IAM 権限（最小権限）
+
+| 対象 | 許可アクション |
+|---|---|
+| DynamoDB | `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `BatchWriteItem` |
+| API Gateway | `execute-api:ManageConnections` |
+| S3 | `s3:PutObject`（ResultsBucket のみ） |
+
+## DynamoDB テーブル設計
 
 ### メインテーブル: `quiz-app-{stage}`
 
 | PK | SK | 用途 |
 |---|---|---|
-| `GAME` | `STATE` | ゲーム状態（status, currentQuizId, questionHistory, sessionId 等） |
+| `GAME` | `STATE` | ゲーム状態（status, sessionId, quizTitle, questionHistory 等） |
 | `QUIZ#{quizId}` | `META` | クイズ問題データ |
-| `QUIZ#{quizId}` | `ANSWER#{playerId}` | 回答データ（isCorrect, pointsAwarded 含む） |
-| `PLAYER#{playerId}` | `META` | プレイヤーデータ（totalScore, correctCount 等） |
+| `QUIZ#{quizId}` | `ANSWER#{playerId}` | 回答データ（isCorrect, pointsAwarded） |
+| `PLAYER#{playerId}` | `META` | プレイヤーデータ（totalScore, correctStreak 等） |
 
 ### 接続テーブル: `quiz-app-connections-{stage}`
 
@@ -74,88 +88,110 @@ sam deploy
 |---|---|---|
 | WebSocket接続ID | player/admin/display/unknown | プレイヤーID（playerのみ） |
 
-## セッション管理
+## スコアリングの仕組み
 
-ゲーム状態に `sessionId` フィールドを保持し、クイズセッションのライフサイクルを管理します。
+### セッション管理
 
-- **`loadQuizzes`**: `randomUUID()` で新しい `sessionId` を生成し、`gameState.sessionId` に保存。全クライアントにブロードキャスト。
+ゲーム状態の `sessionId` フィールドでクイズセッションのライフサイクルを管理します。
+
+- **`loadQuizzes`**: `randomUUID()` で新しい `sessionId` を生成。全クライアントにブロードキャスト。
 - **`resetAll`**: `sessionId` を `null` にリセット。全クライアントに `full_reset` をブロードキャスト。
-- **`getState`**: `state_sync` レスポンスに `sessionId` を含む。
-- **`register`**: `registered` レスポンスに `sessionId` を含む。
+- **`getState`** / **`register`**: レスポンスに `sessionId` を含む。
 
-フロントエンドはこの `sessionId` を `localStorage` に保存し、サーバーから受信した値と比較することで、リセット後にスマホロック解除した端末が前のクイズの参加状態を引きずることを防ぎます。
+フロントエンドは `sessionId` を `localStorage` に保存し、サーバーから受信した値と比較することで、リセット後にスマホロック解除した端末が前のクイズの参加状態を引きずることを防ぎます。不一致時は `localStorage` を全クリアして初期画面に強制復帰します。
 
-## 自動採点の仕組み（選択問題）
-
-`submitAnswer.mjs` で選択問題の回答を受信した際、`correctChoiceIndex` と照合して即座に正誤判定とポイント計算を行います。
+### 対数配点
 
 ```
-1. 回答受信 → putAnswer (isCorrect=null)
-2. correctChoiceIndex と照合 → 正解/不正解を判定
-3. 正解の場合:
-   a. updateAnswerJudgment(true, 0) で一時マーク
-   b. 全正解回答を answeredAt でソート → rank を算出
-   c. calcPoints(basePoints, rank) でポイント計算
-   d. updateAnswerJudgment(true, pointsAwarded) で確定
-   e. プレイヤーの totalScore を加算
-4. judgment_result をプレイヤーに送信
-5. judgment_updated を管理画面に送信（ScoreBoard リアルタイム更新）
-6. live_correct_update を表示画面に送信
+points = max(1, round(basePoints × ln(2) / ln(rank + 1)))
 ```
 
-`closeAnswers.mjs` は回答締切時に全回答が採点済みかチェックし、全員採点済み（＝選択問題のみ）なら `judging` フェーズをスキップして直接 `showing_answer` に遷移します。
+1位が満点、2位以降が対数で逓減。10点満点の場合: 1位→10pt, 2位→6pt, 3位→5pt, 5位→4pt
+
+### ポイント計算のタイミング
+
+**選択問題 — submitAnswer.mjs（即時確定）**
+1. 回答受信 → `correctChoiceIndex` と照合して正誤判定
+2. count-before-mark: 自分を除いた既存の正解数を数える → rank 算出
+3. `calcPoints(basePoints, rank)` → pointsAwarded 即時確定
+4. `judgment_result`（本人）+ `judgment_updated`（全員）を即時送信
+
+**テキスト問題 — judge.mjs（管理者が○×をクリック）**
+1. 管理者が上から順に○×を判定（フロントエンドで強制）
+2. ○の場合: count-before-mark で rank 算出 → ポイント確定
+3. 同上の通知を送信
+
+**正解発表時 — revealAnswer.mjs / closeAnswers.mjs（最終補正）**
+1. 未採点回答を自動で不正解処理
+2. `recalculateCorrectPoints()`: 全正解回答を answeredAt 順にソートし、rank を再算出して差分補正
+3. 無回答者のストリークをリセット
+
+### 連続正解ストリーク
+
+プレイヤーレコードの `correctStreak` フィールドで管理:
+- 正解: +1
+- 不正解: 0 にリセット
+- 無回答（正解発表時に検知）: 0 にリセット
+
+`judgment_result` イベントに `streak` フィールドを含み、フロントエンドで表示。
+
+## S3 結果レポート
+
+`showScores` ハンドラーが最終成績発表時に自動で S3 にテキストレポートを出力します。
+
+**パス**: `results/{sessionId先頭8文字}_{ISO8601タイムスタンプ}.txt`
+
+**内容**:
+- クイズタイトル + 日時
+- 最終成績表（順位・名前・得点・正解数）
+- 問題別の詳細結果（模範解答・許容解答・正解率・全回答一覧）
+
+S3 出力が失敗してもクイズの進行には影響しません（非致命エラー扱い）。
 
 ## WebSocket API リファレンス
 
 ### クライアント → サーバー
 
-| action | 送信元 | パラメータ | 説明 |
+| action | 送信元 | 主要パラメータ | 説明 |
 |---|---|---|---|
-| `register` | 解答者 | `name`, `playerId?` | プレイヤー登録・再接続。`accepting` 時のみ新規可 |
-| `connect_role` | 管理者/表示 | `role`, `secret` | パスワード認証。`full_state` を返す |
-| `load_quizzes` | 管理者 | `quizzes[]` | クイズデータ読込。`sessionId` を生成 |
-| `start_question` | 管理者 | `quizId` | 出題開始。参加受付を終了 |
-| `submit_answer` | 解答者 | `quizId`, `answerText?`, `choiceIndex?` | 回答送信。選択問題は即時自動採点 |
-| `close_answers` | 管理者 | — | 回答締切。全員採点済みなら即正解発表 |
-| `judge` | 管理者 | `quizId`, `playerId`, `isCorrect` | テキスト問題の手動採点。採点済みは無視 |
-| `reveal_answer` | 管理者 | — | 正解発表。未採点を自動不正解処理 |
-| `show_scores` | 管理者 | — | 最終成績発表。全問出題済みが条件 |
-| `reset_all` | 管理者 | — | 全データリセット。`sessionId` を null に |
-| `get_state` | 全員 | — | 現在状態取得。`sessionId` を含む |
-| `ping` | 全員 | — | キープアライブ（30秒間隔） |
+| `register` | 解答者 | `name`, `playerId?` | プレイヤー登録・再接続 |
+| `connect_role` | 管理者/表示 | `role`, `secret` | パスワード認証 |
+| `load_quizzes` | 管理者 | `quizzes[]`, `quizTitle?` | クイズ読込。sessionId 生成 |
+| `start_question` | 管理者 | `quizId` | 出題開始 |
+| `submit_answer` | 解答者 | `quizId`, `answerText?`, `choiceIndex?` | 回答送信 |
+| `close_answers` | 管理者 | — | 回答締切 |
+| `judge` | 管理者 | `quizId`, `playerId`, `isCorrect` | 手動採点 |
+| `reveal_answer` | 管理者 | — | 正解発表 |
+| `show_scores` | 管理者 | — | 最終成績発表 + S3出力 |
+| `reset_all` | 管理者 | — | 全データリセット |
+| `get_state` | 全員 | — | 現在状態取得 |
+| `ping` | 全員 | — | キープアライブ |
 
 ### サーバー → クライアント
 
-| event | 配信先 | 主要フィールド | 説明 |
-|---|---|---|---|
-| `registered` | 解答者 | `playerId`, `sessionId`, `myAnswer`, `myJudgment` | 登録完了。リロード復帰に必要な全データを含む |
-| `registration_rejected` | 解答者 | `reason`, `sessionId` | 登録拒否（init or 受付終了） |
-| `full_state` | 管理者/表示 | `gameState{sessionId}`, `players`, `quizzes` | 認証後のフルステート |
-| `state_sync` | 全員 | `sessionId`, `myAnswer`, `myJudgment`, `revealData` | 現在状態。リロード復帰の核 |
-| `game_state_update` | 全員 | `status`, `sessionId`, `totalQuizCount` | CSV読込時のステータス変更 |
-| `question_started` | 全員 | `quizId`, `questionNumber`, `questionText`, `choices?` | 出題開始 |
-| `answer_submitted` | 解答者 | `answerText`, `answeredAt` | 回答受付確認 |
-| `judgment_result` | 解答者 | `isCorrect`, `pointsAwarded`, `totalScore` | 正誤結果（自動/手動共通） |
-| `new_answer` | 管理者 | `playerId`, `answerText`, `isCorrect?`, `pointsAwarded?` | 新回答（自動採点結果付きの場合あり） |
-| `judgment_updated` | 管理者 | `playerId`, `isCorrect`, `pointsAwarded`, `totalScore` | 採点結果更新（ScoreBoard連動） |
-| `live_correct_update` | 表示 | `correctPlayers[{rank, playerName, pointsAwarded, elapsedMs}]` | 正解者リアルタイム更新 |
-| `answer_count_update` | 表示 | `count`, `total` | 回答済み人数 |
-| `answers_closed` | 全員 | — | 回答締切 |
-| `answer_revealed` | 全員 | `correctAnswer`, `acceptableAnswers`, `correctPlayers` | 正解発表 |
-| `scores_revealed` | 全員 | `rankings` | 最終成績 |
-| `full_reset` | 全員 | `sessionId: null` | リセット。全クライアントが初期状態に戻る |
-| `error` | 送信者 | `code`, `message` | エラー（i18n 対応エラーコード） |
+| event | 配信先 | 主要フィールド |
+|---|---|---|
+| `registered` | 解答者 | `playerId`, `sessionId`, `quizTitle`, `myAnswer`, `myJudgment` |
+| `full_state` | 管理者/表示 | `gameState{sessionId, quizTitle}`, `players`, `quizzes` |
+| `state_sync` | 全員 | `sessionId`, `quizTitle`, `myAnswer`, `myJudgment`, `revealData` |
+| `game_state_update` | 全員 | `status`, `sessionId`, `quizTitle`, `totalQuizCount` |
+| `question_started` | 全員 | `quizId`, `questionNumber`, `questionText`, `choices?` |
+| `answer_submitted` | 解答者 | `answerText`, `answeredAt` |
+| `judgment_result` | 解答者 | `isCorrect`, `pointsAwarded`, `totalScore`, `streak` |
+| `judgment_updated` | 全員 | `playerId`, `isCorrect`, `pointsAwarded`, `totalScore` |
+| `answer_revealed` | 全員 | `correctAnswer`, `acceptableAnswers`, `correctRate`, `correctPlayers` |
+| `scores_revealed` | 全員 | `rankings` |
+| `full_reset` | 全員 | `sessionId: null` |
+| `error` | 送信者 | `code`, `message` |
 
-### エラーコード一覧
-
-バックエンドは日本語メッセージを直接返さず、エラーコードを返します。フロントエンドが `i18n/ja.js` の `error.*` キーで翻訳して表示します。
+### エラーコード
 
 | code | 意味 |
 |---|---|
 | `name_required` | 名前未入力 |
-| `name_taken` | 名前が既に使用されている |
+| `name_taken` | 名前重複 |
 | `wrong_password` | パスワード不一致 |
-| `invalid_role` | 無効なロール指定 |
+| `invalid_role` | 無効なロール |
 | `not_init_state` | init 以外でのクイズ読込 |
 | `empty_quizzes` | クイズデータが空 |
 | `invalid_quiz` | 必須フィールド不足 |

@@ -25,7 +25,7 @@ export async function handleRegister(connectionId, body) {
   }
 
   if (player) {
-    // Existing player found — this is a reconnection (allowed in any state)
+    // Existing player — reconnection (allowed in any state)
     player.connectionId = connectionId;
     if (trimmedName !== player.name) {
       const existing = await getPlayerByName(trimmedName);
@@ -42,8 +42,7 @@ export async function handleRegister(connectionId, body) {
     }
     await putPlayer(player);
   } else {
-    // Player not found (new player or stale session)
-    // New registration only allowed during 'accepting' state
+    // New player — only during accepting state
     if (gameState.status !== 'accepting') {
       await sendToConnection(connectionId, {
         event: 'registration_rejected',
@@ -74,6 +73,7 @@ export async function handleRegister(connectionId, body) {
       totalScore: 0,
       correctCount: 0,
       answerCount: 0,
+      correctStreak: 0,
     };
     await putPlayer(player);
   }
@@ -84,13 +84,14 @@ export async function handleRegister(connectionId, body) {
     connectedAt: new Date().toISOString(),
   });
 
-  // Build response including sessionId and judgment for reload recovery
+  // Build response with all recovery data
   const response = {
     event: 'registered',
     playerId,
     name: player.name,
     totalScore: player.totalScore,
     sessionId: gameState.sessionId || null,
+    quizTitle: gameState.quizTitle || null,
     gameState: {
       status: gameState.status,
       currentQuizId: gameState.currentQuizId,
@@ -117,7 +118,7 @@ export async function handleRegister(connectionId, body) {
 
   await sendToConnection(connectionId, response);
 
-  // Notify all clients (including other players for rank/count display)
+  // Notify all clients (including other players for rank/count)
   const allPlayers = await getAllPlayers();
   await broadcastToAll({
     event: 'player_joined',

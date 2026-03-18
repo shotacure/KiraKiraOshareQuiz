@@ -22,6 +22,7 @@ export async function handleGetState(connectionId) {
     event: 'state_sync',
     status: gameState.status,
     sessionId: gameState.sessionId || null,
+    quizTitle: gameState.quizTitle || null,
     currentQuizId: gameState.currentQuizId,
     questionHistory: gameState.questionHistory || [],
     totalQuizCount: allQuizzes.length,
@@ -69,7 +70,7 @@ export async function handleGetState(connectionId) {
       }
     }
 
-    // Player: include both answer and judgment for reload recovery
+    // Player: include answer and judgment for reload recovery
     if (conn.role === 'player' && conn.playerId) {
       const answer = await getAnswer(gameState.currentQuizId, conn.playerId);
       if (answer) {
@@ -112,6 +113,8 @@ export async function handleGetState(connectionId) {
         correctCount: correctPlayers.length,
         incorrectCount: allAnswers.length - correctPlayers.length,
         totalAnswers: allAnswers.length,
+        correctRate: allAnswers.length > 0
+          ? Math.round((correctPlayers.length / allAnswers.length) * 100) : 0,
         points: quiz.points,
       };
     }

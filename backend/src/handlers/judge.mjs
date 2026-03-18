@@ -1,18 +1,17 @@
 import {
   getConnection,
-  getGameState,
   getQuiz,
   getAnswer,
-  updateAnswerJudgment,
   getPlayer,
   putPlayer,
   getAnswersForQuiz,
+  updateAnswerJudgment,
+  getGameState,
 } from '../lib/db.mjs';
 import { sendToConnection, broadcastToRole, broadcastToAll } from '../lib/broadcast.mjs';
 
 /**
  * Logarithmic point calculation based on answer-speed rank.
- * Rank 1 (fastest) gets full basePoints; lower ranks decay via ln.
  */
 function calcPoints(basePoints, rank) {
   if (rank <= 0) return basePoints;
@@ -38,7 +37,7 @@ export async function handleJudge(connectionId, body) {
   const answer = await getAnswer(quizId, playerId);
   if (!answer) return { statusCode: 404, body: 'Answer not found' };
 
-  // Guard: if already judged, ignore (prevent double scoring)
+  // Guard: already judged — prevent double scoring
   if (answer.isCorrect !== null) {
     return { statusCode: 200, body: 'Already judged' };
   }
@@ -47,8 +46,7 @@ export async function handleJudge(connectionId, body) {
   const basePoints = quiz.points || 10;
 
   if (isCorrect) {
-    // Count already-correct answers BEFORE marking this one
-    // (avoids GSI eventual consistency issues with read-after-write)
+    // Count-before-mark: count existing correct answers before marking this one
     const allAnswers = await getAnswersForQuiz(quizId);
     const alreadyCorrectCount = allAnswers.filter(
       (a) => a.isCorrect === true && a.playerId !== playerId
@@ -56,14 +54,13 @@ export async function handleJudge(connectionId, body) {
     const rank = alreadyCorrectCount + 1;
     const pointsAwarded = calcPoints(basePoints, rank);
 
-    // Mark correct with calculated points in one write
     await updateAnswerJudgment(quizId, playerId, true, pointsAwarded);
 
-    // Add points to player
     const player = await getPlayer(playerId);
     if (player) {
       player.totalScore = (player.totalScore || 0) + pointsAwarded;
       player.correctCount = (player.correctCount || 0) + 1;
+      player.correctStreak = (player.correctStreak || 0) + 1;
       await putPlayer(player);
 
       if (player.connectionId) {
@@ -73,6 +70,7 @@ export async function handleJudge(connectionId, body) {
           isCorrect: true,
           pointsAwarded,
           totalScore: player.totalScore,
+          streak: player.correctStreak,
         });
       }
     }
@@ -98,7 +96,7 @@ export async function handleJudge(connectionId, body) {
       correctPlayers,
     });
 
-    // Notify all clients so player rankings update in real time
+    // Notify all clients for scoreboard update
     await broadcastToAll({
       event: 'judgment_updated',
       quizId,
@@ -113,14 +111,21 @@ export async function handleJudge(connectionId, body) {
     await updateAnswerJudgment(quizId, playerId, false, 0);
 
     const player = await getPlayer(playerId);
-    if (player && player.connectionId) {
-      await sendToConnection(player.connectionId, {
-        event: 'judgment_result',
-        quizId,
-        isCorrect: false,
-        pointsAwarded: 0,
-        totalScore: player.totalScore,
-      });
+    if (player) {
+      // Reset correct streak on incorrect
+      player.correctStreak = 0;
+      await putPlayer(player);
+
+      if (player.connectionId) {
+        await sendToConnection(player.connectionId, {
+          event: 'judgment_result',
+          quizId,
+          isCorrect: false,
+          pointsAwarded: 0,
+          totalScore: player.totalScore,
+          streak: 0,
+        });
+      }
     }
 
     await broadcastToAll({

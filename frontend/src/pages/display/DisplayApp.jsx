@@ -80,13 +80,21 @@ export default function DisplayApp() {
         <span className={`inline-block rounded-full ${connected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`}
           style={{ width: '0.6vw', height: '0.6vw' }} />
       </div>
-      <div className="relative z-10 w-full h-full">
-        {(state.status === 'init' || state.status === 'accepting') && <AcceptingView players={state.players} status={state.status} />}
-        {state.status === 'answering' && <QuestionView quiz={state.currentQuiz} answerCount={state.answerCount} answerTotal={state.answerTotal}
-          qIndex={state.questionHistory.length} qTotal={state.totalQuizCount} liveCorrectPlayers={state.liveCorrectPlayers} />}
-        {state.status === 'judging' && <JudgingView liveCorrectPlayers={state.liveCorrectPlayers} />}
-        {state.status === 'showing_answer' && <RevealView revealData={state.revealData} />}
-        {state.status === 'showing_scores' && <ScoresView rankings={state.rankings} />}
+      <div className="relative z-10 w-full h-full flex flex-col">
+        {/* Persistent title bar — visible from quiz load until reset */}
+        {state.quizTitle && state.status !== 'init' && (
+          <div className="shrink-0 text-center bg-white/40 backdrop-blur-sm border-b border-pink-200" style={{ padding: '0.5vw 0' }}>
+            <p className="font-black text-pink-500" style={{ fontSize: '1.6vw' }}>✨ {state.quizTitle} ✨</p>
+          </div>
+        )}
+        <div className="flex-1 min-h-0">
+          {(state.status === 'init' || state.status === 'accepting') && <AcceptingView players={state.players} status={state.status} />}
+          {state.status === 'answering' && <QuestionView quiz={state.currentQuiz} answerCount={state.answerCount} answerTotal={state.answerTotal}
+            qIndex={state.questionHistory.length} qTotal={state.totalQuizCount} liveCorrectPlayers={state.liveCorrectPlayers} />}
+          {state.status === 'judging' && <JudgingView liveCorrectPlayers={state.liveCorrectPlayers} />}
+          {state.status === 'showing_answer' && <RevealView revealData={state.revealData} />}
+          {state.status === 'showing_scores' && <ScoresView rankings={state.rankings} />}
+        </div>
       </div>
     </div>
   );
@@ -298,7 +306,7 @@ function JudgingView({ liveCorrectPlayers }) {
 
 function RevealView({ revealData }) {
   if (!revealData) return null;
-  const { correctAnswer, acceptableAnswers, correctPlayers, totalAnswers, correctCount, incorrectCount, points } = revealData;
+  const { correctAnswer, acceptableAnswers, correctPlayers, totalAnswers, correctCount, incorrectCount, correctRate, points } = revealData;
   return (
     <div className="w-full h-full flex flex-col items-center justify-center overflow-auto" style={{ padding: '2vw' }}>
       {correctPlayers.length > 0 && <PinkConfetti />}
@@ -313,10 +321,14 @@ function RevealView({ revealData }) {
         </div>
         <p className="font-bold text-pink-400" style={{ fontSize: '1.3vw', marginTop: '1vh' }}>+{points} pt ⭐</p>
       </div>
-      <div className="flex" style={{ gap: '3vw', marginBottom: '2vh' }}>
+      <div className="flex items-center" style={{ gap: '3vw', marginBottom: '2vh' }}>
         <div className="text-center bg-white/60 border border-green-200" style={{ borderRadius: '1.5vw', padding: '0.8vw 2vw' }}>
           <p className="font-black text-green-500" style={{ fontSize: '3vw' }}>{correctCount}</p>
           <p className="font-bold text-green-400" style={{ fontSize: '1vw' }}>{t('display.reveal.correctCount')}</p>
+        </div>
+        <div className="text-center bg-white/60 border border-pink-200" style={{ borderRadius: '1.5vw', padding: '0.8vw 2vw' }}>
+          <p className="font-black text-pink-500" style={{ fontSize: '3vw' }}>{correctRate ?? 0}%</p>
+          <p className="font-bold text-pink-400" style={{ fontSize: '1vw' }}>{t('display.reveal.correctRate')}</p>
         </div>
         <div className="text-center bg-white/60 border border-red-200" style={{ borderRadius: '1.5vw', padding: '0.8vw 2vw' }}>
           <p className="font-black text-red-400" style={{ fontSize: '3vw' }}>{incorrectCount}</p>

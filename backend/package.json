@@ -1,6 +1,6 @@
 {
   "name": "KiraKiraOshareQuiz",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Real-time quiz event management app (backend)",
   "type": "module",

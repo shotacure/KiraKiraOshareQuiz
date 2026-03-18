@@ -45,6 +45,7 @@ export default {
   'player.result.incorrect': '不正解...',
   'player.result.noAnswer': '未回答',
   'player.result.addPoints': '+{pts} pt ⭐',
+  'player.result.streak': '🔥 {count}問連続正解！',
   'player.result.correctIs': '正解は...',
   'player.result.total': '合計:',
 
@@ -133,6 +134,7 @@ export default {
   'display.reveal.correct': '✨ 正解 ✨',
   'display.reveal.correctCount': '正解 🎉',
   'display.reveal.incorrectCount': '不正解 😢',
+  'display.reveal.correctRate': '正解率 📊',
   'display.reveal.correctPlayersTitle': '正解者（はやい順）🏃‍♀️',
   'display.reveal.noCorrect': '正解者なし... 😭',
 

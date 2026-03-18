@@ -18,7 +18,7 @@ export async function handleLoadQuizzes(connectionId, body) {
     return { statusCode: 400, body: 'Can only load in init state' };
   }
 
-  const { quizzes } = body;
+  const { quizzes, quizTitle } = body;
   if (!Array.isArray(quizzes) || quizzes.length === 0) {
     await sendToConnection(connectionId, {
       event: 'error',
@@ -58,13 +58,14 @@ export async function handleLoadQuizzes(connectionId, body) {
 
   await putQuizBatch(validated);
 
-  // Generate a unique session ID for this quiz session
+  // Generate a unique session ID and store quiz title
   const sessionId = randomUUID();
 
   await updateGameState({
     status: 'accepting',
     questionHistory: [],
     sessionId,
+    quizTitle: quizTitle || null,
   });
 
   const allQuizzes = await getAllQuizzes();
@@ -74,14 +75,15 @@ export async function handleLoadQuizzes(connectionId, body) {
     count: validated.length,
     quizzes: allQuizzes,
     sessionId,
+    quizTitle: quizTitle || null,
   });
 
-  // Broadcast with sessionId so player clients can store it
   await broadcastToAll({
     event: 'game_state_update',
     status: 'accepting',
     totalQuizCount: allQuizzes.length,
     sessionId,
+    quizTitle: quizTitle || null,
   });
 
   return { statusCode: 200, body: `${validated.length} quizzes loaded` };

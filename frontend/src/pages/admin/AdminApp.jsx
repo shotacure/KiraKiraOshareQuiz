@@ -10,11 +10,26 @@ import { t } from '../../i18n';
  */
 function parseCsvToQuizzes(csvText) {
   const lines = csvText.trim().split(/\r?\n/);
-  if (lines.length < 2) throw new Error(t('admin.csv.noData'));
-  const header = lines[0].split(',').map(h => h.trim());
+
+  // Extract metadata from # comment lines
+  let quizTitle = null;
+  const dataLines = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#title,')) {
+      quizTitle = trimmed.substring('#title,'.length).trim();
+    } else if (trimmed.startsWith('#')) {
+      // Other comment lines — skip
+    } else {
+      dataLines.push(trimmed);
+    }
+  }
+
+  if (dataLines.length < 2) throw new Error(t('admin.csv.noData'));
+  const header = dataLines[0].split(',').map(h => h.trim());
   const quizzes = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (let i = 1; i < dataLines.length; i++) {
+    const line = dataLines[i].trim();
     if (!line) continue;
     const values = [];
     let current = '';
@@ -44,7 +59,7 @@ function parseCsvToQuizzes(csvText) {
       order: qNum,
     });
   }
-  return quizzes;
+  return { quizzes, quizTitle };
 }
 
 export default function AdminApp() {
@@ -115,6 +130,7 @@ export default function AdminApp() {
       {/* Header: title and info left, connection badge right */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h1 className="font-display font-black text-xl text-quiz-text">{t('admin.dashboard.title')}</h1>
+        {state.quizTitle && <span className="text-quiz-teal text-sm font-bold truncate max-w-xs">📋 {state.quizTitle}</span>}
         <StatusBadge status={state.status} />
         <span className="text-quiz-muted text-sm whitespace-nowrap">{t('admin.dashboard.players', { count: state.players.length })}</span>
         <span className="text-quiz-muted text-sm whitespace-nowrap">{t('admin.dashboard.progress', { done: state.questionHistory.length, total: state.totalQuizCount })}</span>
@@ -175,8 +191,8 @@ function ControlPanel({ state, send }) {
     setLoading(true);
     try {
       const text = await file.text();
-      const quizzes = parseCsvToQuizzes(text);
-      send({ action: 'load_quizzes', quizzes });
+      const { quizzes, quizTitle } = parseCsvToQuizzes(text);
+      send({ action: 'load_quizzes', quizzes, quizTitle });
     } catch (err) {
       alert(t('admin.csv.error', { detail: err.message }));
     }

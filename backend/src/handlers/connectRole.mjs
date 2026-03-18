@@ -63,6 +63,7 @@ export async function handleConnectRole(connectionId, body) {
     })),
   };
 
+  // Include current answers for admin
   if (role === 'admin' && gameState.currentQuizId) {
     const answers = await getAnswersForQuiz(gameState.currentQuizId);
     fullState.currentAnswers = answers.map((a) => ({
@@ -72,6 +73,7 @@ export async function handleConnectRole(connectionId, body) {
       choiceIndex: a.choiceIndex,
       answeredAt: a.answeredAt,
       isCorrect: a.isCorrect,
+      pointsAwarded: a.pointsAwarded,
       elapsedMs: gameState.questionStartedAt
         ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
         : null,
