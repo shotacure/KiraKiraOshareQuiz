@@ -7,12 +7,10 @@ import {
   updateAnswerJudgment,
   getPlayer,
   putPlayer,
+  getAllPlayers,
 } from '../lib/db.mjs';
 import { broadcastToAll, sendToConnection } from '../lib/broadcast.mjs';
 
-/**
- * Logarithmic point calculation based on answer-speed rank.
- */
 function calcPoints(basePoints, rank) {
   if (rank <= 0) return basePoints;
   if (rank === 1) return basePoints;
@@ -21,8 +19,7 @@ function calcPoints(basePoints, rank) {
 }
 
 /**
- * Recalculate points for all correct answers based on definitive answeredAt order.
- * Fixes any race-condition-induced point miscalculation from submit-time auto-judging.
+ * Recalculate points for all correct answers (safety net for race conditions).
  */
 async function recalculateCorrectPoints(quizId, basePoints) {
   const allAnswers = await getAnswersForQuiz(quizId);
@@ -34,18 +31,13 @@ async function recalculateCorrectPoints(quizId, basePoints) {
     const a = correctAnswers[i];
     const correctRank = i + 1;
     const correctPts = calcPoints(basePoints, correctRank);
-
-    // Always update if points differ (fixes race conditions from auto-judge)
     const diff = correctPts - (a.pointsAwarded || 0);
     if (diff !== 0) {
       await updateAnswerJudgment(quizId, a.playerId, true, correctPts);
-
       const player = await getPlayer(a.playerId);
       if (player) {
         player.totalScore = (player.totalScore || 0) + diff;
         await putPlayer(player);
-
-        // Notify the player of finalized points
         if (player.connectionId) {
           await sendToConnection(player.connectionId, {
             event: 'judgment_result',
@@ -53,10 +45,9 @@ async function recalculateCorrectPoints(quizId, basePoints) {
             isCorrect: true,
             pointsAwarded: correctPts,
             totalScore: player.totalScore,
+            streak: player.correctStreak || 0,
           });
         }
-
-        // Update all clients' player lists for rank display
         await broadcastToAll({
           event: 'judgment_updated',
           quizId,
@@ -85,25 +76,40 @@ export async function handleRevealAnswer(connectionId) {
   const quiz = await getQuiz(gameState.currentQuizId);
   if (!quiz) return { statusCode: 404, body: 'Quiz not found' };
 
-  // Auto-mark any unjudged answers as incorrect
+  // Auto-mark unjudged answers as incorrect and reset their streak
   const answers = await getAnswersForQuiz(gameState.currentQuizId);
   for (const a of answers) {
     if (a.isCorrect === null) {
       await updateAnswerJudgment(gameState.currentQuizId, a.playerId, false, 0);
       const player = await getPlayer(a.playerId);
-      if (player?.connectionId) {
-        await sendToConnection(player.connectionId, {
-          event: 'judgment_result',
-          quizId: gameState.currentQuizId,
-          isCorrect: false,
-          pointsAwarded: 0,
-          totalScore: player.totalScore,
-        });
+      if (player) {
+        player.correctStreak = 0;
+        await putPlayer(player);
+        if (player.connectionId) {
+          await sendToConnection(player.connectionId, {
+            event: 'judgment_result',
+            quizId: gameState.currentQuizId,
+            isCorrect: false,
+            pointsAwarded: 0,
+            totalScore: player.totalScore,
+            streak: 0,
+          });
+        }
       }
     }
   }
 
-  // Recalculate all correct answer points to fix any race-condition discrepancies
+  // Reset streak for players who didn't answer at all
+  const allPlayers = await getAllPlayers();
+  const answeredPlayerIds = new Set(answers.map(a => a.playerId));
+  for (const p of allPlayers) {
+    if (!answeredPlayerIds.has(p.playerId) && (p.correctStreak || 0) > 0) {
+      p.correctStreak = 0;
+      await putPlayer(p);
+    }
+  }
+
+  // Recalculate correct answer points (safety net)
   await recalculateCorrectPoints(gameState.currentQuizId, quiz.points || 10);
 
   await updateGameState({
@@ -111,7 +117,6 @@ export async function handleRevealAnswer(connectionId) {
     revealedAnswer: true,
   });
 
-  // Re-fetch answers after recalculation
   const finalAnswers = await getAnswersForQuiz(gameState.currentQuizId);
   const correctPlayers = finalAnswers
     .filter((a) => a.isCorrect === true)
@@ -134,6 +139,7 @@ export async function handleRevealAnswer(connectionId) {
 
   const totalAnswers = finalAnswers.length;
   const correctCount = correctPlayers.length;
+  const correctRate = totalAnswers > 0 ? Math.round((correctCount / totalAnswers) * 100) : 0;
 
   await broadcastToAll({
     event: 'answer_revealed',
@@ -146,6 +152,7 @@ export async function handleRevealAnswer(connectionId) {
     totalAnswers,
     correctCount,
     incorrectCount: totalAnswers - correctCount,
+    correctRate,
   });
 
   return { statusCode: 200, body: 'Answer revealed' };

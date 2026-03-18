@@ -22,7 +22,6 @@ export async function handleResetAll(connectionId) {
   await deleteAllPlayers();
   await deleteAllQuizzes();
 
-  // Reset game state including sessionId (null = no active session)
   await updateGameState({
     status: 'init',
     currentQuizId: null,
@@ -30,9 +29,9 @@ export async function handleResetAll(connectionId) {
     questionHistory: [],
     revealedAnswer: false,
     sessionId: null,
+    quizTitle: null,
   });
 
-  // Broadcast with sessionId=null so all clients know the session is invalidated
   await broadcastToAll({
     event: 'full_reset',
     status: 'init',

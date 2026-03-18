@@ -96,10 +96,7 @@ export async function handleSubmitAnswer(connectionId, body) {
   player.answerCount = (player.answerCount || 0) + 1;
   await putPlayer(player);
 
-  // Auto-judge choice questions: calculate rank and points immediately.
-  // Uses count-before-mark approach: count existing correct answers BEFORE marking
-  // this one, avoiding GSI eventual consistency issues.
-  // Final safety net: recalculateCorrectPoints at reveal time.
+  // Auto-judge choice questions with immediate point calculation
   let autoJudged = false;
   if (quiz.questionType === 'choice' && quiz.correctChoiceIndex != null) {
     const isCorrect = choiceIndex === quiz.correctChoiceIndex;
@@ -107,7 +104,7 @@ export async function handleSubmitAnswer(connectionId, body) {
     const basePoints = quiz.points || 10;
 
     if (isCorrect) {
-      // Count already-correct answers BEFORE marking this one (safe from race conditions)
+      // Count-before-mark: count existing correct answers before marking this one
       const allAnswers = await getAnswersForQuiz(quizId);
       const alreadyCorrectCount = allAnswers.filter(
         (a) => a.isCorrect === true && a.playerId !== conn.playerId
@@ -119,6 +116,8 @@ export async function handleSubmitAnswer(connectionId, body) {
 
       player.totalScore = (player.totalScore || 0) + pointsAwarded;
       player.correctCount = (player.correctCount || 0) + 1;
+      // Increment correct streak
+      player.correctStreak = (player.correctStreak || 0) + 1;
       await putPlayer(player);
 
       await sendToConnection(connectionId, {
@@ -132,6 +131,7 @@ export async function handleSubmitAnswer(connectionId, body) {
         isCorrect: true,
         pointsAwarded,
         totalScore: player.totalScore,
+        streak: player.correctStreak,
       });
 
       await broadcastToRole('admin', {
@@ -176,8 +176,12 @@ export async function handleSubmitAnswer(connectionId, body) {
         correctPlayers,
       });
     } else {
-      // Incorrect choice — 0 points
+      // Incorrect choice
       await updateAnswerJudgment(quizId, conn.playerId, false, 0);
+
+      // Reset correct streak
+      player.correctStreak = 0;
+      await putPlayer(player);
 
       await sendToConnection(connectionId, {
         event: 'answer_submitted',
@@ -190,6 +194,7 @@ export async function handleSubmitAnswer(connectionId, body) {
         isCorrect: false,
         pointsAwarded: 0,
         totalScore: player.totalScore,
+        streak: 0,
       });
 
       await broadcastToRole('admin', {
@@ -217,7 +222,7 @@ export async function handleSubmitAnswer(connectionId, body) {
   }
 
   if (!autoJudged) {
-    // Text question: no auto-judging, manual ○× by admin
+    // Text question: no auto-judging
     await sendToConnection(connectionId, {
       event: 'answer_submitted',
       answerText: answer.answerText,

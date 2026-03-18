@@ -24,6 +24,7 @@ Globals:
         CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
         WEBSOCKET_ENDPOINT: !Sub "https://${QuizWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
         ADMIN_SECRET: !Ref AdminSecret
+        RESULTS_BUCKET: !Ref ResultsBucket
 
 Resources:
   # ============================================================
@@ -83,6 +84,19 @@ Resources:
         Enabled: true
 
   # ============================================================
+  # S3 Bucket for quiz result reports
+  # ============================================================
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "quiz-results-${Stage}-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldResults
+            Status: Enabled
+            ExpirationInDays: 365
+
+  # ============================================================
   # WebSocket API
   # ============================================================
   QuizWebSocketApi:
@@ -100,7 +114,7 @@ Resources:
       AutoDeploy: true
 
   # ============================================================
-  # Lambda Function (single handler)
+  # Lambda Function (single handler) — minimum privilege IAM
   # ============================================================
   QuizHandlerFunction:
     Type: AWS::Serverless::Function
@@ -109,16 +123,36 @@ Resources:
       CodeUri: src/
       Handler: index.handler
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref QuizTable
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ConnectionsTable
+        # DynamoDB: minimum required actions
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:BatchWriteItem
+              Resource:
+                - !GetAtt QuizTable.Arn
+                - !Sub "${QuizTable.Arn}/index/*"
+                - !GetAtt ConnectionsTable.Arn
+                - !Sub "${ConnectionsTable.Arn}/index/*"
+        # API Gateway: send messages to WebSocket clients
         - Statement:
             - Effect: Allow
               Action:
                 - execute-api:ManageConnections
               Resource:
                 - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QuizWebSocketApi}/${Stage}/POST/@connections/*"
+        # S3: write result reports only
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub "${ResultsBucket.Arn}/*"
 
   QuizHandlerPermission:
     Type: AWS::Lambda::Permission
@@ -189,3 +223,6 @@ Outputs:
   ConnectionsTableName:
     Description: DynamoDB connections table name
     Value: !Ref ConnectionsTable
+  ResultsBucketName:
+    Description: S3 bucket for quiz result reports
+    Value: !Ref ResultsBucket

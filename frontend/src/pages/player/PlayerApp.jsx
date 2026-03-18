@@ -219,10 +219,10 @@ export default function PlayerApp() {
       <PlayerHeader name={state.playerName} score={state.totalScore} rank={myRank} total={playerCount} />
       {(status === 'init' || status === 'accepting' || status === 'waiting') && <WaitingScreen status={status} />}
       {status === 'answering' && !state.myAnswer && <AnswerScreen quiz={state.currentQuiz} send={send} />}
-      {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} judgment={state.myJudgment} />}
-      {status === 'judging' && <JudgingScreen answer={state.myAnswer} judgment={state.myJudgment} />}
+      {status === 'answering' && state.myAnswer && <SubmittedScreen answer={state.myAnswer} judgment={state.myJudgment} streak={state.streak} />}
+      {status === 'judging' && <JudgingScreen answer={state.myAnswer} judgment={state.myJudgment} streak={state.streak} />}
       {status === 'showing_answer' && (
-        <ResultScreen myAnswer={state.myAnswer} judgment={state.myJudgment} revealData={state.revealData} score={state.totalScore} />
+        <ResultScreen myAnswer={state.myAnswer} judgment={state.myJudgment} revealData={state.revealData} score={state.totalScore} streak={state.streak} />
       )}
       {status === 'showing_scores' && <ScoresScreen rankings={state.rankings} playerId={state.playerId} />}
     </Shell>
@@ -393,9 +393,9 @@ function AnswerScreen({ quiz, send }) {
 }
 
 /* Submitted: also show auto-judgment result for choice questions */
-function SubmittedScreen({ answer, judgment }) {
+function SubmittedScreen({ answer, judgment, streak }) {
   if (judgment) {
-    return <MiniResultScreen answer={answer} judgment={judgment} />;
+    return <MiniResultScreen answer={answer} judgment={judgment} streak={streak} />;
   }
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
@@ -411,7 +411,7 @@ function SubmittedScreen({ answer, judgment }) {
 }
 
 /* Mini result shown immediately for auto-judged choice questions (during answering state) */
-function MiniResultScreen({ answer, judgment }) {
+function MiniResultScreen({ answer, judgment, streak }) {
   const isCorrect = judgment.isCorrect === true;
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-pop">
@@ -423,6 +423,9 @@ function MiniResultScreen({ answer, judgment }) {
       {isCorrect && judgment.pointsAwarded > 0 && (
         <p className="font-black text-xl text-yellow-500">{t('player.result.addPoints', { pts: judgment.pointsAwarded })}</p>
       )}
+      {isCorrect && streak >= 2 && (
+        <p className="font-bold text-orange-500 mt-1 animate-bounce">{t('player.result.streak', { count: streak })}</p>
+      )}
       <div className="bg-white/70 rounded-2xl border-2 border-pink-100 p-4 text-center mt-4">
         <p className="text-pink-300 text-sm">{t('player.submitted.yourAnswer')}</p>
         <p className="font-bold text-lg text-pink-600 mt-1">{answer.answerText}</p>
@@ -432,9 +435,9 @@ function MiniResultScreen({ answer, judgment }) {
   );
 }
 
-function JudgingScreen({ answer, judgment }) {
+function JudgingScreen({ answer, judgment, streak }) {
   if (judgment) {
-    return <MiniResultScreen answer={answer} judgment={judgment} />;
+    return <MiniResultScreen answer={answer} judgment={judgment} streak={streak} />;
   }
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 animate-fade-in">
@@ -450,7 +453,7 @@ function JudgingScreen({ answer, judgment }) {
   );
 }
 
-function ResultScreen({ myAnswer, judgment, revealData, score }) {
+function ResultScreen({ myAnswer, judgment, revealData, score, streak }) {
   const isCorrect = judgment?.isCorrect === true;
   const answered = !!myAnswer;
   return (
@@ -464,6 +467,9 @@ function ResultScreen({ myAnswer, judgment, revealData, score }) {
       </p>
       {isCorrect && judgment.pointsAwarded > 0 && (
         <p className="font-black text-2xl text-yellow-500 animate-count-up">{t('player.result.addPoints', { pts: judgment.pointsAwarded })}</p>
+      )}
+      {isCorrect && streak >= 2 && (
+        <p className="font-bold text-orange-500 mt-1 animate-bounce">{t('player.result.streak', { count: streak })}</p>
       )}
       {revealData && (
         <div className="bg-white/70 rounded-2xl border-2 border-pink-200 p-5 text-center mt-6 w-full max-w-sm">

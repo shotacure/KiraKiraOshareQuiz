@@ -15,6 +15,8 @@ const initialState = {
   playerName: null,
   totalScore: 0,
   sessionId: null,
+  quizTitle: null,
+  streak: 0,
 
   status: 'init',
   currentQuiz: null,
@@ -54,6 +56,7 @@ function reducer(state, action) {
         totalScore: action.payload.totalScore || 0,
         status: action.payload.gameState?.status || state.status,
         sessionId: action.payload.sessionId ?? state.sessionId,
+        quizTitle: action.payload.quizTitle ?? state.quizTitle,
         registrationRejected: false,
         myAnswer: action.payload.myAnswer || state.myAnswer,
         myJudgment: action.payload.myJudgment || state.myJudgment,
@@ -67,6 +70,7 @@ function reducer(state, action) {
         authError: null,
         status: gs.status || 'init',
         sessionId: gs.sessionId ?? state.sessionId,
+        quizTitle: gs.quizTitle ?? state.quizTitle,
         players: action.payload.players || [],
         quizzes: action.payload.quizzes || [],
         questionHistory: gs.questionHistory || [],
@@ -156,6 +160,7 @@ function reducer(state, action) {
           pointsAwarded: action.payload.pointsAwarded,
         },
         totalScore: newTotalScore,
+        streak: action.payload.streak ?? state.streak,
         players: updatedPlayersJR,
       };
     }
@@ -209,6 +214,7 @@ function reducer(state, action) {
         quizzes: action.payload.quizzes || [],
         status: 'accepting',
         sessionId: action.payload.sessionId ?? state.sessionId,
+        quizTitle: action.payload.quizTitle ?? state.quizTitle,
         totalQuizCount: (action.payload.quizzes || []).length,
       };
 
@@ -217,6 +223,7 @@ function reducer(state, action) {
         ...state,
         status: action.payload.status,
         sessionId: action.payload.sessionId ?? state.sessionId,
+        quizTitle: action.payload.quizTitle ?? state.quizTitle,
         totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
         currentQuiz: action.payload.status === 'init' || action.payload.status === 'accepting'
           ? null : state.currentQuiz,
@@ -227,6 +234,7 @@ function reducer(state, action) {
         ...state,
         status: action.payload.status,
         sessionId: action.payload.sessionId ?? state.sessionId,
+        quizTitle: action.payload.quizTitle ?? state.quizTitle,
         syncCounter: state.syncCounter + 1,
         questionHistory: action.payload.questionHistory || state.questionHistory,
         totalQuizCount: action.payload.totalQuizCount || state.totalQuizCount,
