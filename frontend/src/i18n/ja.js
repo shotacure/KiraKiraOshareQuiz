@@ -1,6 +1,6 @@
 export default {
   // ── App-wide ──
-  'app.title': 'キラキラ おしゃれクイズ',
+  'app.title': 'キラキラおしゃれ新生活応援クイズ',
   'app.connecting': '接続中',
   'app.reconnecting': '再接続中...',
   'app.recovering': '復帰中...',

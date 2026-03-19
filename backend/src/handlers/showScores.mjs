@@ -7,6 +7,7 @@ import {
   getAnswersForQuiz,
 } from '../lib/db.mjs';
 import { sendToConnection, broadcastToAll } from '../lib/broadcast.mjs';
+import { rt } from '../lib/i18n.mjs';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 const s3 = new S3Client({});
@@ -19,30 +20,31 @@ function formatMs(ms) {
 
 /**
  * Generate a human-readable text report of quiz results.
+ * All user-facing text is sourced from the backend i18n module.
  */
 async function generateReport(gameState, players, quizzes) {
-  const title = gameState.quizTitle || 'クイズ結果';
+  const title = gameState.quizTitle || rt('report.defaultTitle');
   const now = new Date();
   const jstStr = new Date(now.getTime() + 9 * 60 * 60 * 1000)
     .toISOString().replace('T', ' ').replace(/\.\d+Z$/, '') + ' (JST)';
 
   const lines = [];
   lines.push('='.repeat(60));
-  lines.push(`${title} — 結果レポート`);
+  lines.push(rt('report.title', { title }));
   lines.push(jstStr);
   lines.push('='.repeat(60));
   lines.push('');
 
   // Final standings
-  lines.push('■ 最終成績');
+  lines.push(rt('report.section.finalStandings'));
   lines.push('─'.repeat(50));
-  lines.push(` ${'順位'.padEnd(6)} ${'名前'.padEnd(16)} ${'得点'.padEnd(8)} 正解数`);
+  lines.push(` ${rt('report.header.rank').padEnd(6)} ${rt('report.header.name').padEnd(16)} ${rt('report.header.score').padEnd(8)} ${rt('report.header.correctCount')}`);
   lines.push('─'.repeat(50));
   const sorted = [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
   sorted.forEach((p, i) => {
-    const rank = `${i + 1}位`;
+    const rank = `${i + 1}${rt('report.rankSuffix')}`;
     const name = (p.name || '').padEnd(14);
-    const score = `${p.totalScore || 0}pt`.padEnd(6);
+    const score = `${p.totalScore || 0}${rt('report.ptSuffix')}`.padEnd(6);
     const correct = `${p.correctCount || 0}/${quizzes.length}`;
     lines.push(` ${rank.padEnd(6)} ${name} ${score} ${correct}`);
   });
@@ -50,47 +52,51 @@ async function generateReport(gameState, players, quizzes) {
   lines.push('');
 
   // Per-question results
-  lines.push('■ 問題別結果');
+  lines.push(rt('report.section.perQuestion'));
   lines.push('');
 
   for (const quiz of quizzes) {
-    const typeLabel = quiz.questionType === 'choice' ? '選択' : 'テキスト';
-    lines.push(`Q${quiz.questionNumber}: ${quiz.questionText} (${typeLabel}, ${quiz.points}pt)`);
+    const typeLabel = quiz.questionType === 'choice' ? rt('report.typeChoice') : rt('report.typeText');
+    lines.push(rt('report.questionLabel', { num: quiz.questionNumber, text: quiz.questionText, type: typeLabel, pts: quiz.points }));
 
     if (quiz.modelAnswer) {
-      lines.push(`  模範解答: ${quiz.modelAnswer}`);
+      lines.push(`  ${rt('report.modelAnswer', { answer: quiz.modelAnswer })}`);
     }
     if (quiz.acceptableAnswers && quiz.acceptableAnswers.length > 0) {
-      lines.push(`  許容解答: ${quiz.acceptableAnswers.join(', ')}`);
+      lines.push(`  ${rt('report.acceptableAnswers', { answers: quiz.acceptableAnswers.join(', ') })}`);
     }
 
     const answers = await getAnswersForQuiz(quiz.quizId);
     const correctCount = answers.filter(a => a.isCorrect === true).length;
     const rate = answers.length > 0 ? Math.round((correctCount / answers.length) * 100) : 0;
-    lines.push(`  正解率: ${correctCount}/${answers.length} (${rate}%)`);
+    lines.push(`  ${rt('report.correctRate', { correct: correctCount, total: answers.length, rate })}`);
 
     if (answers.length > 0) {
       lines.push(`  ${'─'.repeat(46)}`);
-      lines.push(`   ${'順位'.padEnd(6)} ${'名前'.padEnd(14)} ${'回答'.padEnd(14)} ${'時間'.padEnd(8)} ${'結果'.padEnd(4)} 得点`);
+      lines.push(`   ${rt('report.header.rank').padEnd(6)} ${rt('report.header.name').padEnd(14)} ${rt('report.header.answer').padEnd(14)} ${rt('report.header.timeDiff').padEnd(8)} ${rt('report.header.result').padEnd(4)} ${rt('report.header.points')}`);
       lines.push(`  ${'─'.repeat(46)}`);
 
       const sortedAnswers = [...answers].sort((a, b) =>
         new Date(a.answeredAt) - new Date(b.answeredAt)
       );
 
+      // Use the earliest answer as time baseline for this question
+      const firstAnswerTime = sortedAnswers.length > 0
+        ? new Date(sortedAnswers[0].answeredAt).getTime() : null;
+
       let correctRank = 0;
-      sortedAnswers.forEach(a => {
+      sortedAnswers.forEach((a) => {
         const isCorrect = a.isCorrect === true;
         if (isCorrect) correctRank++;
         const rank = isCorrect ? `${correctRank}` : '-';
         const name = (a.playerName || '').padEnd(12);
         const ans = (a.answerText || '').substring(0, 12).padEnd(12);
         const elapsed = formatMs(
-          a.answeredAt && gameState.questionStartedAt
-            ? new Date(a.answeredAt).getTime() - new Date(gameState.questionStartedAt).getTime()
+          firstAnswerTime && a.answeredAt
+            ? new Date(a.answeredAt).getTime() - firstAnswerTime
             : null
         ).padEnd(6);
-        const result = isCorrect ? '○' : '×';
+        const result = isCorrect ? rt('report.correct') : rt('report.incorrect');
         const pts = isCorrect ? `+${a.pointsAwarded || 0}` : '0';
         lines.push(`   ${rank.padEnd(6)} ${name} ${ans} ${elapsed} ${result.padEnd(4)} ${pts}`);
       });
@@ -163,7 +169,6 @@ export async function handleShowScores(connectionId) {
       console.log(`[S3] Report exported: s3://${RESULTS_BUCKET}/${key}`);
     } catch (err) {
       console.error('[S3] Failed to export report:', err);
-      // Non-fatal: don't fail the entire operation
     }
   }
 
