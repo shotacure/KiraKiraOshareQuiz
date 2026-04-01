@@ -23,6 +23,10 @@ frontend/dist/
 .env.local
 .env.*.local
 
+# Deploy scripts (copied from *.example, contain AWS profile / S3 bucket name / CloudFront ID)
+deploy.sh
+deploy.ps1
+
 # ============================================================
 # IDE
 # ============================================================

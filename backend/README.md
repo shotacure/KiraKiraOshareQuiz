@@ -41,7 +41,7 @@ backend/
 
 - AWS CLI v2（設定済み）
 - AWS SAM CLI
-- Node.js 20 以上
+- Node.js 22 以上
 
 ### デプロイ手順
 

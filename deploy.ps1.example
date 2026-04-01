@@ -1,0 +1,95 @@
+# =============================================================
+# Deploy script for Kira-Kira OshareQuiz (PowerShell)
+# Usage:
+#   .\deploy.ps1                  Deploy everything (backend first, then frontend)
+#   .\deploy.ps1 -Target frontend Deploy frontend to S3 + invalidate CloudFront
+#   .\deploy.ps1 -Target backend  Deploy backend via SAM
+# =============================================================
+
+param(
+    [ValidateSet("all", "frontend", "backend")]
+    [string]$Target = "all"
+)
+
+$ErrorActionPreference = "Stop"
+
+# --- Configuration (fill in your values) ---
+$AWS_PROFILE = "YOUR_AWS_PROFILE"
+$FRONTEND_BUCKET = "YOUR_S3_BUCKET_NAME"
+$CF_DISTRIBUTION_ID = "YOUR_CLOUDFRONT_DISTRIBUTION_ID"
+
+# プロファイルを全 aws / sam コマンドに適用
+$env:AWS_PROFILE = $AWS_PROFILE
+
+# --- Functions ---
+
+function Deploy-Backend {
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Write-Host " Building & deploying backend (SAM)..."  -ForegroundColor Cyan
+    Write-Host " Profile: $AWS_PROFILE"                  -ForegroundColor Cyan
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Push-Location backend/src
+    npm install
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    Pop-Location
+    Push-Location backend
+    sam build
+    if ($LASTEXITCODE -ne 0) { throw "sam build failed" }
+    sam deploy --no-fail-on-empty-changeset
+    if ($LASTEXITCODE -ne 0) { throw "sam deploy failed" }
+    Pop-Location
+    Write-Host "Backend deployment complete.`n" -ForegroundColor Green
+}
+
+function Deploy-Frontend {
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Write-Host " Deploying frontend..."                  -ForegroundColor Cyan
+    Write-Host " Profile: $AWS_PROFILE"                  -ForegroundColor Cyan
+    Write-Host "=========================================" -ForegroundColor Cyan
+
+    # Vite ビルド
+    Push-Location frontend
+    npm install
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+    Write-Host ""
+
+    # S3 へアップロード
+    Write-Host "Uploading to s3://$FRONTEND_BUCKET ..."
+    aws s3 sync dist/ "s3://$FRONTEND_BUCKET" --delete
+    if ($LASTEXITCODE -ne 0) { throw "s3 sync failed" }
+    Write-Host ""
+
+    # index.html のキャッシュ制御（短い TTL で SPA の更新を即反映）
+    aws s3 cp "s3://$FRONTEND_BUCKET/index.html" "s3://$FRONTEND_BUCKET/index.html" `
+        --cache-control "max-age=60" `
+        --content-type "text/html" `
+        --metadata-directive REPLACE
+    if ($LASTEXITCODE -ne 0) { throw "s3 cp (cache-control) failed" }
+
+    # CloudFront キャッシュ無効化
+    if ($CF_DISTRIBUTION_ID -ne "YOUR_CLOUDFRONT_DISTRIBUTION_ID") {
+        Write-Host "Invalidating CloudFront cache..."
+        aws cloudfront create-invalidation `
+            --distribution-id $CF_DISTRIBUTION_ID `
+            --paths "/*" `
+            --output text
+        if ($LASTEXITCODE -ne 0) { throw "CloudFront invalidation failed" }
+    } else {
+        Write-Host "Skipping CloudFront invalidation (distribution ID not configured)."
+    }
+
+    Pop-Location
+    Write-Host "Frontend deployment complete.`n" -ForegroundColor Green
+}
+
+# --- Main ---
+
+switch ($Target) {
+    "frontend" { Deploy-Frontend }
+    "backend"  { Deploy-Backend }
+    "all"      { Deploy-Backend; Deploy-Frontend }
+}
+
+Write-Host "Done!" -ForegroundColor Green
